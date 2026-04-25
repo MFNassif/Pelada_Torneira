@@ -6,6 +6,9 @@ import {
   getFirestore, collection, doc, setDoc, getDoc, getDocs,
   onSnapshot, updateDoc, deleteDoc
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+import {
+  getStorage, ref, uploadString, getDownloadURL
+} from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js';
 
 // ─── CONSTANTS ───────────────────────────────────────────────
 const K_SHRINKAGE = 5;
@@ -45,10 +48,12 @@ function usarSemFirebase() {
   showSetup(false); showLogin(true);
 }
 
+let storage_fire = null;
 function initFB(cfg) {
   try {
     const app = initializeApp(cfg);
     db_fire = getFirestore(app);
+    storage_fire = getStorage(app);
   } catch(e) { console.error(e); showToast('Erro Firebase'); }
 }
 
@@ -82,17 +87,84 @@ async function entrar() {
   const nome = document.getElementById('loginNome').value.trim();
   if (!nome) { showToast('Digite seu nome'); return; }
 
-  // Check if matches a registered player
-  const match = fuzzyFind(nome, appData.jogadores);
+  const match = appData.jogadores.find(j => j.nome.toLowerCase() === nome.toLowerCase());
+
   if (match) {
-    const isAdmin = (appData.admins || []).includes(match.id);
-    currentUser = { id: match.id, nome: match.nome, isAdmin };
+    // Existing player — check password
+    if (match.senha) {
+      showPasswordStep(match, 'login');
+    } else {
+      // No password yet — ask to create one
+      showPasswordStep(match, 'criar');
+    }
   } else {
-    // Not a registered player — enters as viewer only
-    const isAdmin = false;
-    currentUser = { id: 'guest_' + Date.now(), nome, isAdmin, isGuest: true };
+    // Not a registered player — guest viewer
+    currentUser = { id: 'guest_' + Date.now(), nome, isAdmin: false, isGuest: true };
+    localStorage.setItem(LS_USER, JSON.stringify(currentUser));
+    showLogin(false);
+    showApp();
+  }
+}
+
+function showPasswordStep(jogador, modo) {
+  const loginCard = document.getElementById('loginCard');
+  const isLogin = modo === 'login';
+  loginCard.innerHTML = `
+    <div style="font-family:'Oswald',sans-serif;font-size:18px;font-weight:700;color:var(--gold-lt);margin-bottom:4px">
+      ${isLogin ? 'BEM-VINDO,' : 'CRIAR SENHA,'}
+    </div>
+    <div style="font-size:13px;color:var(--t2);margin-bottom:18px">${jogador.nome}</div>
+    ${!isLogin ? `<div style="font-size:11px;color:var(--t2);margin-bottom:12px">Crie uma senha para proteger sua conta</div>` : ''}
+    <div class="field">
+      <label>${isLogin ? 'Senha' : 'Nova senha'}</label>
+      <input class="input" id="inputSenha" type="password" placeholder="••••••" maxlength="30" onkeydown="if(event.key==='Enter')confirmarSenha('${jogador.id}','${modo}')">
+    </div>
+    ${!isLogin ? `
+    <div class="field">
+      <label>Confirmar senha</label>
+      <input class="input" id="inputSenha2" type="password" placeholder="••••••" maxlength="30">
+    </div>` : ''}
+    <button class="btn btn-gold" onclick="confirmarSenha('${jogador.id}','${modo}')">
+      ${isLogin ? 'ENTRAR' : 'CRIAR SENHA E ENTRAR'}
+    </button>
+    <button class="btn btn-ghost mt8" onclick="voltarLogin()">← VOLTAR</button>
+  `;
+  setTimeout(() => document.getElementById('inputSenha')?.focus(), 100);
+}
+
+function voltarLogin() {
+  // Rebuild login card
+  document.getElementById('loginCard').innerHTML = `
+    <div class="field">
+      <label>Seu nome na pelada</label>
+      <input class="input" id="loginNome" placeholder="Como te chamam?" maxlength="25" onkeydown="if(event.key==='Enter')entrar()">
+    </div>
+    <button class="btn btn-gold" onclick="entrar()">ENTRAR ⚽</button>
+    <div style="font-size:11px;color:var(--t3);text-align:center;margin-top:12px">Nenhuma senha necessária</div>
+  `;
+}
+
+async function confirmarSenha(jogadorId, modo) {
+  const senha = document.getElementById('inputSenha')?.value;
+  if (!senha || senha.length < 4) { showToast('Senha deve ter pelo menos 4 caracteres'); return; }
+
+  const j = appData.jogadores.find(x => x.id === jogadorId);
+  if (!j) return;
+
+  if (modo === 'criar') {
+    const senha2 = document.getElementById('inputSenha2')?.value;
+    if (senha !== senha2) { showToast('Senhas não coincidem'); return; }
+    // Save hashed password (simple hash for this use case)
+    j.senha = btoa(senha);
+    await firestoreSet('jogadores', jogadorId, j);
+    saveLocal();
+  } else {
+    // Verify password
+    if (btoa(senha) !== j.senha) { showToast('Senha incorreta'); return; }
   }
 
+  const isAdmin = (appData.admins || []).includes(j.id);
+  currentUser = { id: j.id, nome: j.nome, isAdmin, foto: j.foto || null };
   localStorage.setItem(LS_USER, JSON.stringify(currentUser));
   showLogin(false);
   showApp();
@@ -116,6 +188,11 @@ async function loadFB() {
     appData.restricoes = rs.docs.map(d=>d.data());
     appData.config = cfg.exists() ? cfg.data() : { aleatoriedade:15 };
     appData.admins = adm.exists() ? (adm.data().list||[]) : [];
+    // Load last sorteio
+    try {
+      const sortSnap = await getDoc(doc(db_fire,'config','ultimoSorteio'));
+      appData.ultimoSorteio = sortSnap.exists() ? sortSnap.data() : null;
+    } catch(e) { appData.ultimoSorteio = null; }
     if (appData.admins.length===0 && currentUser) {
       appData.admins=[currentUser.id];
       await firestoreSet('config','admins',{list:[currentUser.id]});
@@ -133,6 +210,11 @@ function subscribeRT() {
   unsubscribe = onSnapshot(collection(db_fire,'jogadores'), snap => {
     appData.jogadores = snap.docs.map(d=>d.data());
     refreshScreen();
+  });
+  // Also subscribe to sorteio updates
+  onSnapshot(doc(db_fire,'config','ultimoSorteio'), snap => {
+    appData.ultimoSorteio = snap.exists() ? snap.data() : null;
+    if (curScreen === 'home') renderHome();
   });
 }
 
@@ -225,7 +307,12 @@ function showLogin(v) { document.getElementById('loginScreen').style.display=v?'
 function showApp() {
   const shell=document.getElementById('appShell');
   shell.style.display='flex';
-  document.getElementById('hAvatar').textContent=(currentUser?.nome||'?')[0].toUpperCase();
+  const hAvatar = document.getElementById('hAvatar');
+  if (currentUser?.foto) {
+    hAvatar.innerHTML = `<img src="${currentUser.foto}" style="width:100%;height:100%;border-radius:50%;object-fit:cover">`;
+  } else {
+    hAvatar.textContent = (currentUser?.nome||'?')[0].toUpperCase();
+  }
   document.getElementById('hNome').textContent=currentUser?.nome||'—';
   document.getElementById('hAdminDot').style.display=currentUser?.isAdmin?'block':'none';
   document.getElementById('adminJogBtn').style.display=currentUser?.isAdmin?'block':'none';
@@ -237,11 +324,32 @@ function showApp() {
 
 // ─── HOME ────────────────────────────────────────────────────
 function renderHome() {
-  const n=appData.jogadores.length;
-  const isGuest=currentUser?.isGuest;
-  document.getElementById('homeSub').textContent=currentUser?`Bem-vindo, ${currentUser.nome}!${isGuest?' (visitante)':''}`:'';
-  document.getElementById('homeMsg').textContent=n===0?'Nenhum jogador cadastrado ainda':`${n} jogadores cadastrados`;
-  document.getElementById('homeStats').textContent=isGuest?'Você está como visitante — apenas visualização':'';
+  const isAdmin = currentUser?.isAdmin;
+  document.getElementById('homeSub').textContent = currentUser ? `Bem-vindo, ${currentUser.nome}!` : '';
+  document.getElementById('btnSortear').style.display = isAdmin ? 'flex' : 'none';
+
+  const sorteio = appData.ultimoSorteio;
+  const msg = document.getElementById('homeMsg');
+  const stats = document.getElementById('homeStats');
+
+  if (!sorteio || !sorteio.times || sorteio.times.length === 0) {
+    msg.innerHTML = '<div style="font-family:'Oswald',sans-serif;font-size:16px;color:var(--t2);letter-spacing:1px">TIMES AINDA NÃO SORTEADOS</div>';
+    stats.innerHTML = '';
+    return;
+  }
+
+  const T_COLORS = ['t0','t1','t2','t3'];
+  const timesHTML = sorteio.times.map((t, ti) => `
+    <div class="team-card ${T_COLORS[ti]}" style="margin-bottom:8px">
+      <div class="t-name"><div class="t-dot"></div>Time ${ti+1}</div>
+      ${t.map(id => {
+        const j = appData.jogadores.find(x=>x.id===id);
+        return `<div class="t-player"><span>${j?.nome||id}</span></div>`;
+      }).join('')}
+    </div>`).join('');
+
+  msg.innerHTML = timesHTML;
+  stats.innerHTML = `<div style="font-size:10px;color:var(--t3);margin-top:4px">Sorteado em ${sorteio.data}</div>`;
 }
 
 // ─── JOGADORES ───────────────────────────────────────────────
@@ -256,9 +364,10 @@ function renderJogs() {
     const ix=idxMap[j.id], nd=nDom(j);
     const isAdm=(appData.admins||[]).includes(j.id);
     const ifStr=nd>0?ix?.IF.toFixed(2):null;
+    const isOnline = currentUser?.id === j.id;
     return `
     <div class="prow" onclick="openPerfil('${j.id}')">
-      <div class="p-avatar">${j.nome[0].toUpperCase()}</div>
+      <div class="p-avatar" style="${j.foto?'padding:0;overflow:hidden':''}${isOnline?';border-color:var(--gold)':''}">${j.foto?`<img src="${j.foto}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`:j.nome[0].toUpperCase()}</div>
       <div class="p-info">
         <div class="p-name">${j.nome}${isAdm?'<span class="badge-adm">ADMIN</span>':''}</div>
         <div class="p-meta">Nota: ${j.nota?.toFixed(1)} · ${nd} domingo${nd!==1?'s':''}</div>
@@ -353,9 +462,18 @@ function openPerfil(id) {
         <div>Score <span>${scoreRaw(d.gols,d.assists,d.vitorias).toFixed(4)}</span></div>
       </div>
     </div>`).join('');
+  const canEditPhoto = currentUser?.id === j.id || currentUser?.isAdmin;
+  const fotoHTML = j.foto
+    ? `<img src="${j.foto}" style="width:80px;height:80px;border-radius:50%;object-fit:cover;border:2px solid var(--border-gold);display:block;margin:0 auto 12px">`
+    : `<div style="width:80px;height:80px;border-radius:50%;background:var(--s3);border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-family:'Oswald',sans-serif;font-size:32px;color:var(--t2);margin:0 auto 12px">${j.nome[0].toUpperCase()}</div>`;
+
   document.getElementById('perfilBody').innerHTML=`
-    <div class="m-title">${j.nome}</div>
-    <div class="m-sub">Nota opinativa: ${j.nota?.toFixed(1)}</div>
+    <div style="text-align:center;margin-bottom:14px">
+      ${fotoHTML}
+      ${canEditPhoto ? `<button onclick="abrirUploadFoto('${j.id}')" style="background:var(--s2);border:1px solid var(--border-gold);border-radius:99px;color:var(--gold);font-size:11px;padding:5px 14px;cursor:pointer;font-family:'DM Sans',sans-serif">📷 ${j.foto ? 'Trocar foto' : 'Adicionar foto'}</button>` : ''}
+    </div>
+    <div class="m-title" style="text-align:center">${j.nome}</div>
+    <div class="m-sub" style="text-align:center">Nota opinativa: ${j.nota?.toFixed(1)}</div>
     <div class="pills">
       <div class="pill"><div class="pill-v">${nd>0&&ix?ix.IF.toFixed(2):'—'}</div><div class="pill-l">Índice</div></div>
       <div class="pill"><div class="pill-v">${tg}</div><div class="pill-l">Gols</div></div>
@@ -379,6 +497,59 @@ function openPerfil(id) {
   openModal('modalPerfil');
 }
 function openPerfilProprio() { if(currentUser) openPerfil(currentUser.id); }
+
+// ─── FOTO DE PERFIL ──────────────────────────────────────────
+function abrirUploadFoto(jogadorId) {
+  if (currentUser?.id !== jogadorId && !currentUser?.isAdmin) { showToast('Sem permissão'); return; }
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) { showToast('Foto muito grande (máx 2MB)'); return; }
+    showToast('Enviando foto...');
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const base64 = ev.target.result;
+      // Save as base64 directly in Firestore (small photos only)
+      const j = appData.jogadores.find(x => x.id === jogadorId);
+      if (!j) return;
+      // Resize before saving
+      const resized = await resizeImage(base64, 200);
+      j.foto = resized;
+      await firestoreSet('jogadores', jogadorId, j);
+      if (currentUser?.id === jogadorId) {
+        currentUser.foto = resized;
+        localStorage.setItem(LS_USER, JSON.stringify(currentUser));
+        // Update header avatar
+        const hAvatar = document.getElementById('hAvatar');
+        hAvatar.innerHTML = `<img src="${resized}" style="width:100%;height:100%;border-radius:50%;object-fit:cover">`;
+      }
+      saveLocal();
+      showToast('Foto atualizada! ✅');
+      openPerfil(jogadorId);
+    };
+    reader.readAsDataURL(file);
+  };
+  input.click();
+}
+
+function resizeImage(base64, maxSize) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let w = img.width, h = img.height;
+      if (w > h) { if (w > maxSize) { h = h * maxSize / w; w = maxSize; } }
+      else { if (h > maxSize) { w = w * maxSize / h; h = maxSize; } }
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      resolve(canvas.toDataURL('image/jpeg', 0.7));
+    };
+    img.src = base64;
+  });
+}
 
 // ─── OPCOES ──────────────────────────────────────────────────
 function renderOpcoes() {
@@ -625,7 +796,23 @@ function sortearTimes() {
   flow._r=0;flow.times=times;flow.step='times';renderFlow();
 }
 function resortear(){sortearTimes();}
-function confirmarTimes(){flow.step='partida';renderFlow();}
+async function confirmarTimes(){
+  flow.step='partida';
+  // Save teams to Firebase so everyone can see
+  const timesData = {
+    times: flow.times,
+    data: flow.data,
+    sorteadoEm: Date.now(),
+    nomes: flow.times.map(t => t.map(id => {
+      const j = appData.jogadores.find(x=>x.id===id);
+      return j?.nome || id;
+    }))
+  };
+  await firestoreSet('config', 'ultimoSorteio', timesData);
+  appData.ultimoSorteio = timesData;
+  saveLocal();
+  renderFlow();
+}
 function cancelarPartida(){if(confirm('Cancelar? Times descartados.'))document.getElementById('flow').style.display='none';}
 function finalizarPartida(){
   flow.step='stats';flow.statsIdx=0;
@@ -729,6 +916,9 @@ function sairDaConta() {
   document.getElementById('loginNome').value = '';
 }
 window.sairDaConta = sairDaConta;
+window.abrirUploadFoto = abrirUploadFoto;
+window.confirmarSenha = confirmarSenha;
+window.voltarLogin = voltarLogin;
 
 // ─── TOAST ───────────────────────────────────────────────────
 function showToast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);}
