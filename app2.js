@@ -377,20 +377,27 @@ function jogadorInadimplente(jogadorId) {
   const pagamentos = fin.pagamentos || [];
   const totalPago = pagamentos.reduce((s,p) => s + (p.valor||0), 0);
 
-  // Multas sempre bloqueiam
-  const totalMultas = debitos.filter(d => d.tipo === 'multa').reduce((s,d) => s + (d.valor||0), 0);
-  if (totalMultas > totalPago) return true; // simplificado: tem multa não quitada
+  // Multas sempre bloqueiam (independente de tipo ou prazo)
+  const totalMultas = debitos
+    .filter(d => d.tipo === 'multa')
+    .reduce((s,d) => s + (d.valor||0), 0);
+  // Pró-rata: desconta pagamentos dos não-multas primeiro, depois das multas
+  const totalNaoMultas = debitos
+    .filter(d => d.tipo !== 'multa')
+    .reduce((s,d) => s + (d.valor||0), 0);
+  const pagoParaMultas = Math.max(0, totalPago - totalNaoMultas);
+  if (totalMultas > pagoParaMultas) return true;
 
   // Avulsos: qualquer débito não pago bloqueia
   if (!jogadorMensalista(jogadorId)) {
     return totalDebitoJogador(jogadorId) > 0;
   }
 
-  // Mensalista: mensalidade só bloqueia APÓS o 5du do mês
+  // Mensalista: mensalidade só bloqueia APÓS o 5du
   const passou5du = semanasAtraso5du() > 0;
-  if (!passou5du) return false; // ainda no prazo — pode confirmar
+  if (!passou5du) return false; // dentro do prazo — pode confirmar mesmo com mensalidade pendente
 
-  // Após 5du: bloqueia se tiver saldo devedor
+  // Após 5du: bloqueia se tiver qualquer saldo devedor
   return totalDebitoJogador(jogadorId) > 0;
 }
 
@@ -2439,11 +2446,26 @@ function renderFinancas() {
   const emDia = rows.filter(r => r.saldo <= 0);
 
   const semanas = semanasAtraso5du();
-  const avisoAtrasado = semanas > 0 ? `<span style="color:#ef4444"> (+R$${(semanas*5).toFixed(0)}/sem em atraso)</span>` : '';
-  const aviso5du = `<div style="background:rgba(255,68,68,.1);border:1px solid rgba(255,68,68,.3);border-radius:10px;padding:12px 14px;margin-bottom:16px">
-    <div style="font-size:13px;font-weight:700;color:#ef4444">⚠️ MENSALISTAS: Pagamento até ${prazoStr}${semanas>0?' — '+semanas+' sem. em atraso':''}</div>
-    <div style="font-size:11px;color:rgba(255,68,68,.8);margin-top:3px">R$80,00 via Pix: mfnassif16@gmail.com${avisoAtrasado}</div>
-    ${isAdmin ? `<button onclick="gerarMensalidadesMes()" style="margin-top:8px;background:rgba(255,68,68,.15);border:1px solid rgba(255,68,68,.3);border-radius:8px;color:#ef4444;font-family:'Oswald',sans-serif;font-size:12px;letter-spacing:1px;padding:6px 14px;cursor:pointer;width:100%">📋 GERAR MENSALIDADES DO MÊS</button>` : ''}
+  // Só mostra atraso se há mensalistas COM mensalidade não paga
+  const mensalistasComDebito = jogadores.filter(j =>
+    jogadorMensalista(j.id) && (() => {
+      const fin = getFinancasJogador(j.id);
+      const totalMensais = (fin.debitos||[]).filter(d=>d.tipo==='mensal').reduce((s,d)=>s+(d.valor||0),0);
+      const totalPago = (fin.pagamentos||[]).reduce((s,p)=>s+(p.valor||0),0);
+      return totalMensais > totalPago;
+    })()
+  );
+  const temInadimplenteMensal = mensalistasComDebito.length > 0;
+  const mostrarAtraso = semanas > 0 && temInadimplenteMensal;
+  const corAviso = atrasado5du && temInadimplenteMensal ? 'rgba(255,68,68,.1)' : 'rgba(201,168,76,.08)';
+  const corBorda = atrasado5du && temInadimplenteMensal ? 'rgba(255,68,68,.3)' : 'var(--border-gold)';
+  const corTexto = atrasado5du && temInadimplenteMensal ? '#ef4444' : 'var(--gold-lt)';
+  const icone = atrasado5du && temInadimplenteMensal ? '⚠️' : '📅';
+  const avisoAtrasado = mostrarAtraso ? ` — ${semanas} sem. em atraso (+R$${(semanas*5).toFixed(0)})` : '';
+  const aviso5du = `<div style="background:${corAviso};border:1px solid ${corBorda};border-radius:10px;padding:12px 14px;margin-bottom:16px">
+    <div style="font-size:13px;font-weight:700;color:${corTexto}">${icone} MENSALISTAS: Pagamento até ${prazoStr}${avisoAtrasado}</div>
+    <div style="font-size:11px;color:var(--t2);margin-top:3px">R$80,00 via Pix: mfnassif16@gmail.com</div>
+    ${isAdmin ? `<button onclick="gerarMensalidadesMes()" style="margin-top:8px;background:var(--gold-dim);border:1px solid var(--border-gold);border-radius:8px;color:var(--gold);font-family:'Oswald',sans-serif;font-size:12px;letter-spacing:1px;padding:6px 14px;cursor:pointer;width:100%">📋 GERAR MENSALIDADES DO MÊS</button>` : ''}
   </div>`;
 
   const renderRow = (r) => {
