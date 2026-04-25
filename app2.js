@@ -331,13 +331,15 @@ function getFinancasJogador(jogadorId) {
 }
 
 function semanasAtraso5du() {
-  // Calcula semanas de atraso baseado no 5du do mês ATUAL (não do próximo)
+  // Weeks overdue based on this month's 5du (day comparison only)
   const hoje = new Date();
-  hoje.setHours(0,0,0,0);
-  const prazoAtual = calc5DiasUteis(hoje.getMonth(), hoje.getFullYear());
-  prazoAtual.setHours(23,59,59,0);
-  if (hoje <= prazoAtual) return 0;
-  const diffMs = hoje - prazoAtual;
+  const diaHoje = hoje.getDate();
+  const mesHoje = hoje.getMonth();
+  const anoHoje = hoje.getFullYear();
+  const dia5du = calc5DiasUteis(mesHoje, anoHoje);
+  if (diaHoje <= dia5du) return 0;
+  const prazo = new Date(anoHoje, mesHoje, dia5du);
+  const diffMs = hoje - prazo;
   return Math.floor(diffMs / (7 * 24 * 60 * 60 * 1000));
 }
 
@@ -346,12 +348,20 @@ function totalDebitoJogador(jogadorId) {
   const total = (fin.debitos||[]).reduce((s,d) => s + (d.valor||0), 0);
   const pago = (fin.pagamentos||[]).reduce((s,p) => s + (p.valor||0), 0);
   let saldo = total - pago;
-  // Add automatic weekly late fee for mensalistas with overdue mensal
+  // Add automatic weekly late fee for mensalistas with unpaid mensal debts
   if (jogadorMensalista(jogadorId)) {
-    const temMensalAtrasada = (fin.debitos||[]).some(d => d.tipo === 'mensal' && !d.quitado);
     const semanas = semanasAtraso5du();
-    if (temMensalAtrasada && semanas > 0) {
-      saldo += semanas * 5; // R$5/week
+    if (semanas > 0) {
+      // Check if there are any unpaid mensal debts (saldo from mensais > 0)
+      const saldoMensais = (fin.debitos||[])
+        .filter(d => d.tipo === 'mensal')
+        .reduce((s,d) => s + (d.valor||0), 0);
+      const pagoMensais = (fin.pagamentos||[])
+        .filter(p => p.descricao?.toLowerCase().includes('mensalidade'))
+        .reduce((s,p) => s + (p.valor||0), 0);
+      if (saldoMensais > pagoMensais) {
+        saldo += semanas * 5; // R$5/week auto-applied
+      }
     }
   }
   return +(saldo).toFixed(2);
@@ -367,9 +377,13 @@ function jogadorMensalista(jogadorId) {
 }
 
 async function adicionarDebito(jogadorId, tipo, valor, descricao) {
+  return adicionarDebitoComData(jogadorId, tipo, valor, descricao, new Date().toLocaleDateString('pt-BR'));
+}
+
+async function adicionarDebitoComData(jogadorId, tipo, valor, descricao, data) {
   const fin = getFinancasJogador(jogadorId);
   if (!fin.debitos) fin.debitos = [];
-  fin.debitos.push({ id: 'd'+Date.now(), tipo, valor, descricao, data: new Date().toLocaleDateString('pt-BR'), quitado: false });
+  fin.debitos.push({ id: 'd'+Date.now(), tipo, valor, descricao, data, quitado: false });
   if (!appData.financas) appData.financas = {};
   appData.financas[jogadorId] = fin;
   await firestoreSet('financas', jogadorId, fin);
@@ -387,43 +401,47 @@ async function darBaixa(jogadorId, valor, descricao) {
 }
 
 function calc5DiasUteis(mes, ano) {
+  // mes: 0-indexed (JS style). Returns day number of 5th business day.
   let count = 0, dia = 1;
   while (count < 5) {
-    const d = new Date(ano, mes, dia);
-    const dow = d.getDay();
+    const dow = new Date(ano, mes, dia).getDay();
     if (dow !== 0 && dow !== 6) count++;
     if (count < 5) dia++;
   }
-  return new Date(ano, mes, dia);
+  return dia; // just the day number
 }
 
 function get5DiasUteis() {
+  // Returns Date object of the next relevant 5du deadline
   const hoje = new Date();
-  hoje.setHours(0,0,0,0);
-  const prazoMesAtual = calc5DiasUteis(hoje.getMonth(), hoje.getFullYear());
-  prazoMesAtual.setHours(23,59,59,0);
-  // Se já passou do 5du do mês atual, mostra o do próximo mês
-  if (hoje > prazoMesAtual) {
-    const proxMes = hoje.getMonth() === 11 ? 0 : hoje.getMonth() + 1;
-    const proxAno = hoje.getMonth() === 11 ? hoje.getFullYear() + 1 : hoje.getFullYear();
-    return calc5DiasUteis(proxMes, proxAno);
+  const diaHoje = hoje.getDate();
+  const mesHoje = hoje.getMonth(); // 0-indexed
+  const anoHoje = hoje.getFullYear();
+  const dia5du = calc5DiasUteis(mesHoje, anoHoje);
+  // Compare only dates (ignore time)
+  if (diaHoje > dia5du) {
+    // Already past this month's deadline — show next month's
+    const proxMes = mesHoje === 11 ? 0 : mesHoje + 1;
+    const proxAno = mesHoje === 11 ? anoHoje + 1 : anoHoje;
+    const diaProx = calc5DiasUteis(proxMes, proxAno);
+    return new Date(proxAno, proxMes, diaProx);
   }
-  return prazoMesAtual;
+  return new Date(anoHoje, mesHoje, dia5du);
 }
 
 function getMesReferencia() {
-  // Retorna o mês ao qual a mensalidade atual se refere
+  // Returns the month string for which mensalidade is currently due
   const hoje = new Date();
-  hoje.setHours(0,0,0,0);
-  const prazoMesAtual = calc5DiasUteis(hoje.getMonth(), hoje.getFullYear());
-  prazoMesAtual.setHours(23,59,59,0);
-  if (hoje > prazoMesAtual) {
-    // Próximo mês
-    const proxMes = hoje.getMonth() === 11 ? 0 : hoje.getMonth() + 1;
-    const proxAno = hoje.getMonth() === 11 ? hoje.getFullYear() + 1 : hoje.getFullYear();
+  const diaHoje = hoje.getDate();
+  const mesHoje = hoje.getMonth();
+  const anoHoje = hoje.getFullYear();
+  const dia5du = calc5DiasUteis(mesHoje, anoHoje);
+  if (diaHoje > dia5du) {
+    const proxMes = mesHoje === 11 ? 0 : mesHoje + 1;
+    const proxAno = mesHoje === 11 ? anoHoje + 1 : anoHoje;
     return new Date(proxAno, proxMes, 1).toLocaleString('pt-BR',{month:'long',year:'numeric'});
   }
-  return new Date().toLocaleString('pt-BR',{month:'long',year:'numeric'});
+  return new Date(anoHoje, mesHoje, 1).toLocaleString('pt-BR',{month:'long',year:'numeric'});
 }
 
 // ─── FUZZY ───────────────────────────────────────────────────
@@ -609,7 +627,7 @@ R. Juscelino Barbosa 254
 11:30 às 13:00
 Pix: mfnassif16@gmail.com`;
 
-const REGRAS_PELADA = `• 1ª partida: 10 min (8 primeiros a chegar)
+const REGRAS_PELADA = `• 1ª partida: 10 min, sem limite de gol (2 primeiros times completos)
 • Demais partidas: 7 min ou 2 gols
 • Mensalista: R$80/mês, prioridade até Sex 12h
 • Avulso: R$25/pelada, pagar até Sáb 12h
@@ -1341,7 +1359,18 @@ function renderRankList() {
 
 // ─── PERFIL ──────────────────────────────────────────────────
 function openPerfil(id) {
-  const j=appData.jogadores.find(x=>x.id===id); if(!j) return;
+  const j=appData.jogadores.find(x=>x.id===id);
+  if(!j) {
+    // Guest or unregistered user
+    document.getElementById('perfilBody').innerHTML = `
+      <div style="text-align:center;padding:32px 16px">
+        <div style="font-size:48px;margin-bottom:14px">🚫</div>
+        <div class="m-title" style="color:var(--red)">JOGADOR NÃO CADASTRADO</div>
+        <div class="m-sub" style="margin-top:8px">Este usuário não possui um perfil na pelada.<br>Solicite ao admin para ser cadastrado.</div>
+      </div>`;
+    openModal('modalPerfil');
+    return;
+  }
   const ix=calcIdx(appData.jogadores).find(x=>x.id===id);
   const nd=nDom(j);
   const tg=j.domingos.reduce((s,d)=>s+(d.gols||0),0);
@@ -2475,6 +2504,7 @@ function abrirAddDebito(jogadorId) {
       </div>
       <div class="field"><label>Valor (R$)</label><input class="input" id="debitoValor" type="number" step="0.01" min="0" placeholder="80.00"></div>
       <div class="field"><label>Descrição</label><input class="input" id="debitoDesc" placeholder="Mensalidade março"></div>
+      <div class="field"><label>Data</label><input class="input" id="debitoData" type="date"></div>
       <button class="btn btn-gold" onclick="executarAddDebito('${jogadorId}')">ADICIONAR</button>
       <button class="btn btn-ghost mt8" onclick="document.getElementById('modalAddDebito').remove()">CANCELAR</button>
     </div>`;
@@ -2485,6 +2515,9 @@ function abrirAddDebito(jogadorId) {
     overlay.querySelector('#debitoValor').value = vals[e.target.value] || '';
   });
   overlay.querySelector('#debitoValor').value = 80;
+  // Set today as default date
+  const today = new Date().toISOString().split('T')[0];
+  overlay.querySelector('#debitoData').value = today;
   document.body.appendChild(overlay);
 }
 
@@ -2492,8 +2525,13 @@ async function executarAddDebito(jogadorId) {
   const tipo = document.getElementById('debitoTipo')?.value;
   const val = parseFloat(document.getElementById('debitoValor')?.value);
   const desc = document.getElementById('debitoDesc')?.value?.trim();
+  const dataInput = document.getElementById('debitoData')?.value;
   if (isNaN(val) || val <= 0) { showToast('Valor inválido'); return; }
-  await adicionarDebito(jogadorId, tipo, val, desc || tipo);
+  // Convert date input (yyyy-mm-dd) to pt-BR format
+  const dataFmt = dataInput
+    ? new Date(dataInput + 'T12:00:00').toLocaleDateString('pt-BR')
+    : new Date().toLocaleDateString('pt-BR');
+  await adicionarDebitoComData(jogadorId, tipo, val, desc || tipo, dataFmt);
   document.getElementById('modalAddDebito')?.remove();
   renderFinancas();
   showToast('Débito adicionado');
