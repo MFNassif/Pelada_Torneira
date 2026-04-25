@@ -1457,7 +1457,6 @@ async function checkVotacoesExpiradas() {
   }
 }
 
-}
 // ─── EXPORT ──────────────────────────────────────────────────
 function exportarExcel() {
   const idxMap=Object.fromEntries(calcIdx(appData.jogadores).map(i=>[i.id,i]));
