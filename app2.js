@@ -331,16 +331,20 @@ function getFinancasJogador(jogadorId) {
 }
 
 function semanasAtraso5du() {
-  // Weeks overdue based on this month's 5du (day comparison only)
+  // Weeks overdue based on this month's 5du
   const hoje = new Date();
-  const diaHoje = hoje.getDate();
+  hoje.setHours(0,0,0,0);
   const mesHoje = hoje.getMonth();
   const anoHoje = hoje.getFullYear();
   const dia5du = calc5DiasUteis(mesHoje, anoHoje);
-  if (diaHoje <= dia5du) return 0;
   const prazo = new Date(anoHoje, mesHoje, dia5du);
-  const diffMs = hoje - prazo;
-  return Math.floor(diffMs / (7 * 24 * 60 * 60 * 1000));
+  prazo.setHours(23,59,59,999);
+  if (hoje <= prazo) return 0;
+  // Full weeks since end of deadline day
+  const inicioDia5du = new Date(anoHoje, mesHoje, dia5du);
+  inicioDia5du.setHours(0,0,0,0);
+  const diffDias = Math.floor((hoje - inicioDia5du) / (24*60*60*1000));
+  return Math.floor(diffDias / 7);
 }
 
 function totalDebitoJogador(jogadorId) {
@@ -368,6 +372,25 @@ function totalDebitoJogador(jogadorId) {
 }
 
 function jogadorInadimplente(jogadorId) {
+  const fin = getFinancasJogador(jogadorId);
+  const debitos = fin.debitos || [];
+  const pagamentos = fin.pagamentos || [];
+  const totalPago = pagamentos.reduce((s,p) => s + (p.valor||0), 0);
+
+  // Multas sempre bloqueiam
+  const totalMultas = debitos.filter(d => d.tipo === 'multa').reduce((s,d) => s + (d.valor||0), 0);
+  if (totalMultas > totalPago) return true; // simplificado: tem multa não quitada
+
+  // Avulsos: qualquer débito não pago bloqueia
+  if (!jogadorMensalista(jogadorId)) {
+    return totalDebitoJogador(jogadorId) > 0;
+  }
+
+  // Mensalista: mensalidade só bloqueia APÓS o 5du do mês
+  const passou5du = semanasAtraso5du() > 0;
+  if (!passou5du) return false; // ainda no prazo — pode confirmar
+
+  // Após 5du: bloqueia se tiver saldo devedor
   return totalDebitoJogador(jogadorId) > 0;
 }
 
@@ -400,33 +423,43 @@ async function darBaixa(jogadorId, valor, descricao) {
   showToast('Pagamento registrado ✅');
 }
 
+// Feriados nacionais fixos [dia, mes] (1-indexed)
+const FERIADOS_BR = [
+  [1,1],[21,4],[1,5],[7,9],[12,10],[2,11],[15,11],[20,11],[25,12]
+];
+function isFeriadoBR(d) {
+  return FERIADOS_BR.some(([fd,fm]) => d.getDate()===fd && d.getMonth()+1===fm);
+}
+
 function calc5DiasUteis(mes, ano) {
-  // mes: 0-indexed (JS style). Returns day number of 5th business day.
+  // mes: 0-indexed (JS style). Returns day number of 5th business day (excl. feriados).
   let count = 0, dia = 1;
   while (count < 5) {
-    const dow = new Date(ano, mes, dia).getDay();
-    if (dow !== 0 && dow !== 6) count++;
+    const d = new Date(ano, mes, dia);
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6 && !isFeriadoBR(d)) count++;
     if (count < 5) dia++;
   }
   return dia; // just the day number
 }
 
 function get5DiasUteis() {
-  // Returns Date object of the next relevant 5du deadline
+  // Returns the next relevant 5du deadline (this month or next if already past)
   const hoje = new Date();
-  const diaHoje = hoje.getDate();
-  const mesHoje = hoje.getMonth(); // 0-indexed
+  hoje.setHours(0,0,0,0);
+  const mesHoje = hoje.getMonth();
   const anoHoje = hoje.getFullYear();
   const dia5du = calc5DiasUteis(mesHoje, anoHoje);
-  // Compare only dates (ignore time)
-  if (diaHoje > dia5du) {
-    // Already past this month's deadline — show next month's
+  const prazo = new Date(anoHoje, mesHoje, dia5du);
+  prazo.setHours(23,59,59,999);
+  if (hoje > prazo) {
+    // Past deadline — show next month
     const proxMes = mesHoje === 11 ? 0 : mesHoje + 1;
     const proxAno = mesHoje === 11 ? anoHoje + 1 : anoHoje;
-    const diaProx = calc5DiasUteis(proxMes, proxAno);
-    return new Date(proxAno, proxMes, diaProx);
+    const dia5duProx = calc5DiasUteis(proxMes, proxAno);
+    return new Date(proxAno, proxMes, dia5duProx);
   }
-  return new Date(anoHoje, mesHoje, dia5du);
+  return prazo;
 }
 
 function getMesReferencia() {
