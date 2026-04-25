@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="80" fill="#0c0c0c"/>
+  <rect x="4" y="4" width="504" height="504" rx="78" fill="none" stroke="#C9A84C" stroke-width="3" opacity="0.6"/>
+  <text x="256" y="310" font-size="260" text-anchor="middle" font-family="Arial">⚽</text>
+  <text x="256" y="448" font-size="48" text-anchor="middle" font-family="Arial Black" fill="#C9A84C" letter-spacing="4">TORNEIRA</text>
+</svg>
