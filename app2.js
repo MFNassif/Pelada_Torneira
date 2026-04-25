@@ -850,30 +850,29 @@ function renderPresenca() {
   const isAdminUser = currentUser?.isAdmin;
 
   // ── STATE MACHINE ─────────────────────────────────────────
-  // 1. Times sorteados e confirmados → esconde lista (mostra times na home)
-  // 2. Votação MVP aberta → mostra "aguardando MVP"
-  // 3. Qualquer outro caso → mostra lista de presença
+  // 1. Times confirmados e ativos → esconde lista (times na home)
+  // 2. Votação MVP aberta → bloqueia lista com aviso
+  // 3. Qualquer outro caso → mostra lista (sempre visível)
 
   const sorteio = appData.ultimoSorteio;
-  const timesAtivos = sorteio && sorteio.status === 'confirmado'
-    && timesToArr(sorteio.times, sorteio.timesCount).length > 0;
+  const timesArr = sorteio ? timesToArr(sorteio.times, Object.keys(sorteio.times||{}).length) : [];
+  const timesAtivos = sorteio && sorteio.status === 'confirmado' && timesArr.length > 0;
 
   if (timesAtivos) {
     cont.innerHTML = ''; return; // times visíveis na home, oculta lista
   }
 
-  // Show lista if presença exists (even without sorteio)
-  const presencaExiste = appData.presenca && (
-    (appData.presenca.confirmados||[]).length > 0 ||
-    (appData.presenca.espera||[]).length > 0 ||
-    appData.presenca.aberta === true
-  );
-
-  const peladas = appData.peladasHist || [];
-  const ultimaPelada = peladas.length > 0
-    ? [...peladas].sort((a,b)=>(b.savedAt||0)-(a.savedAt||0))[0]
+  // Check votação MVP (dedup first)
+  const peladasSeen = new Set();
+  const peladasUnicas = (appData.peladasHist||[]).filter(p => {
+    if (!p.id || peladasSeen.has(p.id)) return false;
+    peladasSeen.add(p.id); return true;
+  });
+  const ultimaPelada = peladasUnicas.length > 0
+    ? [...peladasUnicas].sort((a,b)=>(b.savedAt||0)-(a.savedAt||0))[0]
     : null;
-  const votacaoAberta = ultimaPelada?.votacao?.status === 'aberta';
+  const votacaoAberta = ultimaPelada?.votacao?.status === 'aberta'
+    && (ultimaPelada.votacao.elapsesAt || 0) > Date.now();
 
   if (votacaoAberta) {
     cont.innerHTML = `
@@ -887,11 +886,10 @@ function renderPresenca() {
     return;
   }
 
-  // ── LISTA ABERTA ──────────────────────────────────────────
+  // ── LISTA SEMPRE VISÍVEL ───────────────────────────────────
+  // Show list even without sorteio (for pre-registration)
   const presenca = appData.presenca || { confirmados: [], espera: [], data: '' };
   const dataLista = presenca.data || sorteio?.data || '';
-  // If no presença at all and no sorteio, hide
-  if (!presencaExiste && !sorteio) { cont.innerHTML = ''; return; }
   const confirmados = presenca.confirmados || [];
   const espera = presenca.espera || [];
   const total = confirmados.length;
@@ -2553,29 +2551,23 @@ const T_COLORS=['t0','t1','t2','t3'];
 
 function startFlow() {
   if(!currentUser?.isAdmin){showToast('Sem permissão');return;}
-  // Check if there's a confirmed presença list to use
   const confirmados = appData.presenca?.confirmados || [];
-  if (confirmados.length > 0) {
-    // Has presença list — use it (any number)
-    openModal('modalDataSorteio');
-    const dataPres = appData.presenca?.data || new Date().toLocaleDateString('pt-BR');
-    document.getElementById('inputDataSorteio').value = dataPres;
-    // Show info about what will happen
-    const info = document.getElementById('dataSorteioInfo');
-    if (info) {
-      const n = confirmados.length;
-      const pode = n===15||n===20;
-      info.textContent = pode
-        ? `✅ ${n} confirmados → sortear ${n===15?3:4} times`
-        : `⚠️ ${n} confirmados → sem sorteio de times (requer 15 ou 20)`;
-      info.style.color = pode ? 'var(--gold)' : '#eab308';
+  const n = confirmados.length;
+  openModal('modalDataSorteio');
+  const dataPres = appData.presenca?.data || new Date().toLocaleDateString('pt-BR');
+  document.getElementById('inputDataSorteio').value = dataPres;
+  const info = document.getElementById('dataSorteioInfo');
+  if (info) {
+    if (n === 15 || n === 20) {
+      info.textContent = `✅ ${n} confirmados → vai sortear ${n===15?3:4} times automaticamente`;
+      info.style.color = 'var(--gold)';
+    } else if (n > 0) {
+      info.textContent = `📋 ${n} confirmados na lista — seleção manual (sortear requer 15 ou 20)`;
+      info.style.color = '#eab308';
+    } else {
+      info.textContent = 'Sem lista de presença — seleção manual de jogadores';
+      info.style.color = 'var(--t2)';
     }
-  } else {
-    // No presença list — manual selection
-    openModal('modalDataSorteio');
-    document.getElementById('inputDataSorteio').value = new Date().toLocaleDateString('pt-BR');
-    const info = document.getElementById('dataSorteioInfo');
-    if (info) { info.textContent = 'Seleção manual de jogadores'; info.style.color = 'var(--t2)'; }
   }
 }
 
@@ -2585,31 +2577,22 @@ async function confirmarDataSorteio() {
   closeModal('modalDataSorteio');
 
   const confirmados = appData.presenca?.confirmados || [];
-  const temPresenca = confirmados.length > 0;
+  const n = confirmados.length;
 
   appData.restricoes = appData.restricoes.filter(r=>r.duracao!=='domingo');
   flow = {
-    step: 'sel', presentes: [], times:[], data,
+    step: 'sel',
+    presentes: [...confirmados], // pre-populate with lista (even if empty)
+    times:[], data,
     ausentes:[], statsIdx:0, statsOrder:[], statsData:{}, _saving:false
   };
 
-  if (temPresenca) {
-    // HAS presença list — use it directly, skip manual selection
-    flow.presentes = [...confirmados];
-    const n = confirmados.length;
-    if (n === 15 || n === 20) {
-      // Perfect number → sort teams immediately
-      flow.step = 'sel'; // sortearTimes will change to 'times'
-      saveLocal();
-      sortearTimes();
-    } else {
-      // Wrong number → show lista screen (can mark absentes before stats)
-      flow.step = 'lista';
-      saveLocal();
-      renderFlow();
-    }
+  if (n === 15 || n === 20) {
+    // Lista perfeita → auto-sorteia direto, sem tela de seleção
+    saveLocal();
+    sortearTimes(); // sets flow.step to 'times' and renders
   } else {
-    // NO presença list → manual selection
+    // Manual (lista vazia ou número diferente de 15/20)
     flow.step = 'sel';
     saveLocal();
     renderFlow();
@@ -2819,7 +2802,8 @@ function toggleP(id) {
   renderFlow();
 }
 function confirmarPresentes(){
-  if(flow.presentes.length!==15&&flow.presentes.length!==20){showToast('Selecione 15 ou 20');return;}
+  const n = flow.presentes.length;
+  if(n!==10&&n!==15&&n!==20){showToast('Selecione 10, 15 ou 20 jogadores');return;}
   sortearTimes();
 }
 function sortearTimes() {
@@ -2981,14 +2965,17 @@ async function salvarEdicaoTimes() {
 // ─── HOME admin actions (cancelar / concluir) ─────────────────
 async function cancelarPartidaHome() {
   if (!currentUser?.isAdmin) return;
-  if (!confirm('Cancelar partida? Os times e a lista de presença serão removidos.')) return;
+  const temPresenca = (appData.presenca?.confirmados||[]).length > 0;
+  const msg = temPresenca
+    ? 'Cancelar os times? A lista de presença será mantida.'
+    : 'Cancelar a partida?';
+  if (!confirm(msg)) return;
   await firestoreDelete('config', 'ultimoSorteio');
-  await firestoreDelete('config', 'presenca');
   appData.ultimoSorteio = null;
-  appData.presenca = null;
+  // Keep presença — lista volta a aparecer na home
   saveLocal();
   renderHome();
-  showToast('Partida cancelada');
+  showToast(temPresenca ? 'Times cancelados — lista de presença mantida' : 'Partida cancelada');
 }
 
 async function concluirPartidaHome() {
