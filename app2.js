@@ -72,6 +72,8 @@ async function boot() {
   currentUser = JSON.parse(su);
   currentUser.isAdmin = (appData.admins || []).includes(currentUser.id);
   localStorage.setItem(LS_USER, JSON.stringify(currentUser));
+  // Auto-gerar mensalidade do mês para mensalistas
+  await checkMensalidadeAtual();
   // Auto-check: remove avulsos não pagos após sáb 12h
   await checkAvulsosInadimplentes();
   showApp();
@@ -329,10 +331,13 @@ function getFinancasJogador(jogadorId) {
 }
 
 function semanasAtraso5du() {
-  const prazo = get5DiasUteis();
+  // Calcula semanas de atraso baseado no 5du do mês ATUAL (não do próximo)
   const hoje = new Date();
-  if (hoje <= prazo) return 0;
-  const diffMs = hoje - prazo;
+  hoje.setHours(0,0,0,0);
+  const prazoAtual = calc5DiasUteis(hoje.getMonth(), hoje.getFullYear());
+  prazoAtual.setHours(23,59,59,0);
+  if (hoje <= prazoAtual) return 0;
+  const diffMs = hoje - prazoAtual;
   return Math.floor(diffMs / (7 * 24 * 60 * 60 * 1000));
 }
 
@@ -381,9 +386,7 @@ async function darBaixa(jogadorId, valor, descricao) {
   showToast('Pagamento registrado ✅');
 }
 
-function get5DiasUteis() {
-  const hoje = new Date();
-  const mes = hoje.getMonth(), ano = hoje.getFullYear();
+function calc5DiasUteis(mes, ano) {
   let count = 0, dia = 1;
   while (count < 5) {
     const d = new Date(ano, mes, dia);
@@ -392,6 +395,35 @@ function get5DiasUteis() {
     if (count < 5) dia++;
   }
   return new Date(ano, mes, dia);
+}
+
+function get5DiasUteis() {
+  const hoje = new Date();
+  hoje.setHours(0,0,0,0);
+  const prazoMesAtual = calc5DiasUteis(hoje.getMonth(), hoje.getFullYear());
+  prazoMesAtual.setHours(23,59,59,0);
+  // Se já passou do 5du do mês atual, mostra o do próximo mês
+  if (hoje > prazoMesAtual) {
+    const proxMes = hoje.getMonth() === 11 ? 0 : hoje.getMonth() + 1;
+    const proxAno = hoje.getMonth() === 11 ? hoje.getFullYear() + 1 : hoje.getFullYear();
+    return calc5DiasUteis(proxMes, proxAno);
+  }
+  return prazoMesAtual;
+}
+
+function getMesReferencia() {
+  // Retorna o mês ao qual a mensalidade atual se refere
+  const hoje = new Date();
+  hoje.setHours(0,0,0,0);
+  const prazoMesAtual = calc5DiasUteis(hoje.getMonth(), hoje.getFullYear());
+  prazoMesAtual.setHours(23,59,59,0);
+  if (hoje > prazoMesAtual) {
+    // Próximo mês
+    const proxMes = hoje.getMonth() === 11 ? 0 : hoje.getMonth() + 1;
+    const proxAno = hoje.getMonth() === 11 ? hoje.getFullYear() + 1 : hoje.getFullYear();
+    return new Date(proxAno, proxMes, 1).toLocaleString('pt-BR',{month:'long',year:'numeric'});
+  }
+  return new Date().toLocaleString('pt-BR',{month:'long',year:'numeric'});
 }
 
 // ─── FUZZY ───────────────────────────────────────────────────
@@ -696,6 +728,22 @@ function renderPresenca() {
         `<button class="btn btn-ghost" disabled>CONFIRMAR PRESENÇA</button>`
        )}
     </div>`;
+}
+
+async function checkMensalidadeAtual() {
+  // Auto-gera débito de mensalidade para o mês atual se ainda não existe
+  const mesRef = getMesReferencia();
+  const mensalistas = appData.jogadores.filter(j => j.tipoJogador === 'mensalista');
+  let gerou = false;
+  for (const j of mensalistas) {
+    const fin = getFinancasJogador(j.id);
+    const jaTemEsseMes = (fin.debitos||[]).some(d => d.tipo==='mensal' && d.descricao?.includes(mesRef));
+    if (!jaTemEsseMes) {
+      await adicionarDebito(j.id, 'mensal', 80, `Mensalidade ${mesRef}`);
+      gerou = true;
+    }
+  }
+  if (gerou) renderFinancas();
 }
 
 async function checkAvulsosInadimplentes() {
@@ -1333,6 +1381,16 @@ function openPerfil(id) {
     </div>
     <div class="m-title" style="text-align:center">${j.nome}</div>
     <div class="m-sub" style="text-align:center">Nota opinativa: ${j.nota?.toFixed(1)}</div>
+    ${isAdmin && currentUser?.id !== j.id ? `
+    <div style="display:flex;gap:6px;justify-content:center;flex-wrap:wrap;margin-bottom:12px">
+      <button onclick="abrirEditarNota('${j.id}')" style="background:var(--gold-dim);border:1px solid var(--border-gold);border-radius:99px;color:var(--gold);font-size:11px;padding:5px 14px;cursor:pointer;font-family:'DM Sans',sans-serif">✏️ Editar nota</button>
+      <button onclick="toggleAdminPerfil('${j.id}')" style="background:${(appData.admins||[]).includes(j.id)?'rgba(255,68,68,.1)':'rgba(200,241,53,.08)'};border:1px solid ${(appData.admins||[]).includes(j.id)?'rgba(255,68,68,.25)':'var(--border-gold)'};border-radius:99px;color:${(appData.admins||[]).includes(j.id)?'var(--red)':'var(--gold)'};font-size:11px;padding:5px 14px;cursor:pointer;font-family:'DM Sans',sans-serif">
+        ${(appData.admins||[]).includes(j.id)?'⬇️ Remover admin':'⬆️ Tornar admin'}
+      </button>
+      <button onclick="toggleMensalistaPerfil('${j.id}')" style="background:${j.tipoJogador==='mensalista'?'rgba(255,68,68,.1)':'rgba(200,241,53,.08)'};border:1px solid ${j.tipoJogador==='mensalista'?'rgba(255,68,68,.25)':'var(--border-gold)'};border-radius:99px;color:${j.tipoJogador==='mensalista'?'var(--red)':'var(--gold)'};font-size:11px;padding:5px 14px;cursor:pointer;font-family:'DM Sans',sans-serif">
+        ${j.tipoJogador==='mensalista'?'⬇️ Tornar avulso':'⬆️ Tornar mensalista'}
+      </button>
+    </div>` : ''}
     <div class="pills">
       <div class="pill"><div class="pill-v">${nd>0&&ix?ix.IF.toFixed(2):'—'}</div><div class="pill-l">Rating</div></div>
       <div class="pill"><div class="pill-v">${tg}</div><div class="pill-l">Gols</div></div>
@@ -1389,6 +1447,73 @@ function openPerfilProprio() {
       }
     });
   }, 10);
+}
+
+function abrirEditarNota(jogadorId) {
+  if (!currentUser?.isAdmin) return;
+  const j = appData.jogadores.find(x=>x.id===jogadorId);
+  if (!j) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay open';
+  overlay.id = 'modalEditarNota';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="mhandle"></div>
+      <div class="m-title">EDITAR NOTA</div>
+      <div class="m-sub">${j.nome}</div>
+      <div class="field">
+        <label>Nota Opinativa (0.0 – 10.0)</label>
+        <input class="input" id="inputNotaEdit" type="number" min="0" max="10" step="0.1" value="${j.nota?.toFixed(1)||'5.0'}">
+      </div>
+      <button class="btn btn-gold" onclick="salvarNotaEdit('${jogadorId}')">SALVAR</button>
+      <button class="btn btn-ghost mt8" onclick="document.getElementById('modalEditarNota').remove()">CANCELAR</button>
+    </div>`;
+  overlay.addEventListener('click', e => { if(e.target===overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+  setTimeout(() => document.getElementById('inputNotaEdit')?.select(), 100);
+}
+
+async function salvarNotaEdit(jogadorId) {
+  const val = parseFloat(document.getElementById('inputNotaEdit')?.value);
+  if (isNaN(val) || val < 0 || val > 10) { showToast('Nota deve ser entre 0 e 10'); return; }
+  const j = appData.jogadores.find(x=>x.id===jogadorId);
+  if (!j) return;
+  j.nota = +val.toFixed(1);
+  await firestoreSet('jogadores', jogadorId, j);
+  saveLocal();
+  document.getElementById('modalEditarNota')?.remove();
+  showToast('Nota atualizada ✅');
+  openPerfil(jogadorId); // re-render
+}
+
+async function toggleAdminPerfil(jogadorId) {
+  if (!currentUser?.isAdmin) return;
+  if (jogadorId === currentUser.id) { showToast('Não pode alterar seu próprio admin'); return; }
+  const admins = appData.admins || [];
+  const idx = admins.indexOf(jogadorId);
+  if (idx >= 0) admins.splice(idx, 1); else admins.push(jogadorId);
+  appData.admins = admins;
+  await firestoreSet('config', 'admins', { list: admins });
+  saveLocal();
+  const j = appData.jogadores.find(x=>x.id===jogadorId);
+  showToast(`${j?.nome} → ${admins.includes(jogadorId)?'Admin':'Jogador'}`);
+  openPerfil(jogadorId);
+}
+
+async function toggleMensalistaPerfil(jogadorId) {
+  if (!currentUser?.isAdmin) return;
+  const j = appData.jogadores.find(x=>x.id===jogadorId);
+  if (!j) return;
+  const isMensal = j.tipoJogador === 'mensalista';
+  if (!isMensal) {
+    const totalMensalistas = appData.jogadores.filter(x=>x.tipoJogador==='mensalista').length;
+    if (totalMensalistas >= 15) { showToast('Limite de 15 mensalistas atingido'); return; }
+  }
+  j.tipoJogador = isMensal ? 'avulso' : 'mensalista';
+  await firestoreSet('jogadores', jogadorId, j);
+  saveLocal();
+  showToast(`${j.nome} → ${j.tipoJogador}`);
+  openPerfil(jogadorId);
 }
 
 function abrirMudarSenha() {
@@ -2456,6 +2581,11 @@ async function gerarMensalidadesMes() {
   showToast(`Mensalidades geradas: ${count} jogadores`);
 }
 window.gerarMensalidadesMes = gerarMensalidadesMes;
+window.checkMensalidadeAtual = checkMensalidadeAtual;
+window.abrirEditarNota = abrirEditarNota;
+window.salvarNotaEdit = salvarNotaEdit;
+window.toggleAdminPerfil = toggleAdminPerfil;
+window.toggleMensalistaPerfil = toggleMensalistaPerfil;
 
 // ─── TIPO JOGADOR (mensalista/avulso) — managed by admin ─────
 async function setTipoJogador(jogadorId, tipo) {
