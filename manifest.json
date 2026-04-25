@@ -1,11 +1,23 @@
-{
   "name": "Pelada do Torneira",
-  "short_name": "Pelada",
+  "short_name": "Pelada do Torneira",
   "description": "Gerenciador inteligente de times para pelada",
   "start_url": "./",
   "display": "standalone",
   "background_color": "#0c0c0c",
   "theme_color": "#0c0c0c",
   "orientation": "portrait",
-  "icons": [{"src":"icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]
+  "icons": [
+    {
+      "src": "logo.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any"
+    },
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
 }
