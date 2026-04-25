@@ -2518,7 +2518,7 @@ function renderFinancas() {
   </div>`;
 
   const renderRow = (r) => {
-    const { j, saldo, fin, mensalista, multas, avulsos, mensais } = r;
+    const { j, saldo, fin, mensalista, multas, avulsos, mensais, debitos } = r;
     const cor = saldo > 0 ? '#ef4444' : '#22c55e';
     const outros = debitos.filter(d=>d.tipo==='outro');
     const debitosDesc = [
