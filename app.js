@@ -1,5 +1,5 @@
 // ============================================================
-// PELADA DO TORNEIRA — APP.JS  (Firebase multi-user v3)
+// PELADA DO TORNEIRA — APP.JS  (v6 — novo fluxo de sorteio)
 // ============================================================
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
 import {
@@ -53,7 +53,6 @@ function initFB(cfg) {
   } catch(e) { console.error(e); showToast('Erro Firebase'); }
 }
 
-// ─── BOOT ────────────────────────────────────────────────────
 // ─── HARDCODED FIREBASE CONFIG ──────────────────────────────
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyBcR4DWJ8Ckth5LFw8B35Jy50pdEqR2XKg",
@@ -67,7 +66,6 @@ const FIREBASE_CONFIG = {
 window.addEventListener('DOMContentLoaded', boot);
 
 async function boot() {
-  // Firebase config embutido — ninguem precisa configurar
   useFirebase = true;
   initFB(FIREBASE_CONFIG);
   await loadData();
@@ -86,15 +84,12 @@ async function entrar() {
   const match = appData.jogadores.find(j => j.nome.toLowerCase() === nome.toLowerCase());
 
   if (match) {
-    // Existing player — check password
     if (match.senha) {
       showPasswordStep(match, 'login');
     } else {
-      // No password yet — ask to create one
       showPasswordStep(match, 'criar');
     }
   } else {
-    // Not a registered player — guest viewer
     currentUser = { id: 'guest_' + Date.now(), nome, isAdmin: false, isGuest: true };
     localStorage.setItem(LS_USER, JSON.stringify(currentUser));
     showLogin(false);
@@ -129,7 +124,6 @@ function showPasswordStep(jogador, modo) {
 }
 
 function voltarLogin() {
-  // Rebuild login card
   document.getElementById('loginCard').innerHTML = `
     <div class="field">
       <label>Seu nome na pelada</label>
@@ -150,12 +144,10 @@ async function confirmarSenha(jogadorId, modo) {
   if (modo === 'criar') {
     const senha2 = document.getElementById('inputSenha2')?.value;
     if (senha !== senha2) { showToast('Senhas não coincidem'); return; }
-    // Save hashed password (simple hash for this use case)
     j.senha = btoa(senha);
     await firestoreSet('jogadores', jogadorId, j);
     saveLocal();
   } else {
-    // Verify password
     if (btoa(senha) !== j.senha) { showToast('Senha incorreta'); return; }
   }
 
@@ -184,7 +176,6 @@ async function loadFB() {
     appData.restricoes = rs.docs.map(d=>d.data());
     appData.config = cfg.exists() ? cfg.data() : { aleatoriedade:15 };
     appData.admins = adm.exists() ? (adm.data().list||[]) : [];
-    // Load last sorteio
     try {
       const sortSnap = await getDoc(doc(db_fire,'config','ultimoSorteio'));
       appData.ultimoSorteio = sortSnap.exists() ? sortSnap.data() : null;
@@ -207,7 +198,6 @@ function subscribeRT() {
     appData.jogadores = snap.docs.map(d=>d.data());
     refreshScreen();
   });
-  // Also subscribe to sorteio updates
   onSnapshot(doc(db_fire,'config','ultimoSorteio'), snap => {
     appData.ultimoSorteio = snap.exists() ? snap.data() : null;
     if (curScreen === 'home') renderHome();
@@ -232,7 +222,7 @@ async function firestoreDelete(col, id) {
 function scoreRaw(g,a,v) { return +(g + a + W_VIT*v).toFixed(4); }
 function scoreAcum(j) {
   if (!j.domingos?.length) return 0;
-  const s = j.domingos.map(d=>scoreRaw(d.gols,d.assists,d.vitorias));
+  const s = j.domingos.map(d=>scoreRaw(d.gols||0,d.assists||0,d.vitorias||0));
   return +(s.reduce((a,x)=>a+x,0)/s.length).toFixed(4);
 }
 function nDom(j) { return j.domingos?.length||0; }
@@ -327,14 +317,20 @@ function renderHome() {
   const sorteio = appData.ultimoSorteio;
   const msg = document.getElementById('homeMsg');
   const stats = document.getElementById('homeStats');
+  const adminControls = document.getElementById('homeAdminControls');
 
   if (!sorteio || !sorteio.times || sorteio.times.length === 0) {
     msg.innerHTML = `<div style="font-family:'Oswald',sans-serif;font-size:16px;color:var(--t2);letter-spacing:1px">TIMES AINDA NÃO SORTEADOS</div>`;
     stats.innerHTML = '';
+    if (adminControls) adminControls.innerHTML = '';
     return;
   }
 
   const T_COLORS = ['t0','t1','t2','t3'];
+  const statusLabel = sorteio.status === 'confirmado'
+    ? `<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);border-radius:99px;padding:4px 12px;font-size:11px;color:#22c55e;margin-bottom:12px">● PARTIDA EM ANDAMENTO</div>`
+    : '';
+
   const timesHTML = sorteio.times.map((t, ti) => `
     <div class="team-card ${T_COLORS[ti]}" style="margin-bottom:8px">
       <div class="t-name"><div class="t-dot"></div>Time ${ti+1}</div>
@@ -344,8 +340,19 @@ function renderHome() {
       }).join('')}
     </div>`).join('');
 
-  msg.innerHTML = timesHTML;
+  msg.innerHTML = statusLabel + timesHTML;
   stats.innerHTML = `<div style="font-size:10px;color:var(--t3);margin-top:4px">Sorteado em ${sorteio.data}</div>`;
+
+  // Admin controls for active match
+  if (adminControls && isAdmin && sorteio.status === 'confirmado') {
+    adminControls.innerHTML = `
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn btn-danger" style="flex:1" onclick="cancelarPartidaHome()">❌ CANCELAR</button>
+        <button class="btn btn-gold" style="flex:1" onclick="concluirPartidaHome()">🏁 CONCLUIR</button>
+      </div>`;
+  } else if (adminControls) {
+    adminControls.innerHTML = '';
+  }
 }
 
 // ─── JOGADORES ───────────────────────────────────────────────
@@ -363,7 +370,9 @@ function renderJogs() {
     const isOnline = currentUser?.id === j.id;
     return `
     <div class="prow" onclick="openPerfil('${j.id}')">
-      <div class="p-avatar" style="${j.foto?'padding:0;overflow:hidden':''}${isOnline?';border-color:var(--gold)':''}">${j.foto?`<img src="${j.foto}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`:j.nome[0].toUpperCase()}</div>
+      <div class="p-avatar" style="${j.foto?'padding:0;overflow:hidden':''}${isOnline?';border-color:var(--gold)':''}">
+        ${j.foto?`<img src="${j.foto}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`:j.nome[0].toUpperCase()}
+      </div>
       <div class="p-info">
         <div class="p-name">${j.nome}${isAdm?'<span class="badge-adm">ADMIN</span>':''}</div>
         <div class="p-meta">Nota: ${j.nota?.toFixed(1)} · ${nd} domingo${nd!==1?'s':''}</div>
@@ -420,21 +429,89 @@ async function removerJog(id) {
 }
 
 // ─── RANKING ─────────────────────────────────────────────────
+let rankStat = 'IF';
+let rankDir  = 'desc';
+
+function setRankStat(v) {
+  rankStat = v;
+  document.querySelectorAll('.rank-chip').forEach(c => c.classList.toggle('sel', c.dataset.v === v));
+  renderRankList();
+}
+function setRankDir(v) {
+  rankDir = v;
+  document.querySelectorAll('.rank-dir').forEach(c => c.classList.toggle('sel', c.dataset.v === v));
+  renderRankList();
+}
+
 function renderRanking() {
-  const list=document.getElementById('rankList');
-  if(!appData.jogadores.length){list.innerHTML=`<div class="empty"><div class="empty-ico">🏆</div><div class="empty-txt">Nenhum jogador ainda.</div></div>`;return;}
-  const sorted=calcIdx(appData.jogadores).sort((a,b)=>b.IF-a.IF);
-  list.innerHTML=sorted.map((ix,i)=>{
-    const cl=i===0?'g':i===1?'s':i===2?'b':'';
-    const lbl=i===0?'🥇':i===1?'🥈':i===2?'🥉':`#${i+1}`;
-    return `
-    <div class="prow" onclick="openPerfil('${ix.id}')">
-      <div class="rank-n ${cl}">${lbl}</div>
-      <div class="p-info">
-        <div class="p-name">${ix.nome}</div>
-        <div class="p-meta">Nota: ${ix.nota.toFixed(1)} · ${ix.n} domingo${ix.n!==1?'s':''}</div>
+  document.querySelectorAll('.rank-chip').forEach(c => c.classList.toggle('sel', c.dataset.v === rankStat));
+  document.querySelectorAll('.rank-dir').forEach(c  => c.classList.toggle('sel', c.dataset.v === rankDir));
+  renderRankList();
+}
+
+function renderRankList() {
+  const list = document.getElementById('rankList');
+  if (!appData.jogadores.length) {
+    list.innerHTML = `<div class="empty"><div class="empty-ico">🏆</div><div class="empty-txt">Nenhum jogador ainda.</div></div>`;
+    return;
+  }
+
+  const idxArr = calcIdx(appData.jogadores);
+  const idxMap = Object.fromEntries(idxArr.map(x => [x.id, x]));
+
+  const rows = appData.jogadores.map(j => {
+    const ix = idxMap[j.id];
+    const nd = nDom(j);
+    const tg = j.domingos.reduce((s,d) => s + (d.gols||0),    0);
+    const ta = j.domingos.reduce((s,d) => s + (d.assists||0),  0);
+    const tv = j.domingos.reduce((s,d) => s + (d.vitorias||0), 0);
+    return { j, ix, nd, tg, ta, tv,
+      IF:   (nd > 0 && ix) ? ix.IF   : -1,
+      nota: j.nota ?? 0
+    };
+  });
+
+  const mul = rankDir === 'asc' ? 1 : -1;
+  rows.sort((a, b) => {
+    let va, vb;
+    switch (rankStat) {
+      case 'IF':       va = a.IF;   vb = b.IF;   break;
+      case 'nota':     va = a.nota; vb = b.nota; break;
+      case 'gols':     va = a.tg;   vb = b.tg;   break;
+      case 'assists':  va = a.ta;   vb = b.ta;   break;
+      case 'vitorias': va = a.tv;   vb = b.tv;   break;
+      case 'domingos': va = a.nd;   vb = b.nd;   break;
+      default:         va = a.IF;   vb = b.IF;
+    }
+    return mul * (va - vb);
+  });
+
+  list.innerHTML = rows.map((r, i) => {
+    const { j, ix, nd, tg, ta, tv } = r;
+    const isAdm = (appData.admins || []).includes(j.id);
+    const medal = rankDir === 'desc'
+      ? (i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i+1}`)
+      : `#${i+1}`;
+    const cl = (rankDir==='desc') ? (i===0?'g':i===1?'s':i===2?'b':'') : '';
+
+    const IF_str  = nd > 0 && ix ? ix.IF.toFixed(2)  : '—';
+    const nota_str = j.nota?.toFixed(1) ?? '—';
+
+    return `<div class="prow rank-row" onclick="openPerfil('${j.id}')">
+      <div class="rank-row-top">
+        <div class="rank-n ${cl}">${medal}</div>
+        <div class="rank-name-col">
+          <div class="p-name">${j.nome}${isAdm ? '<span class="badge-adm">ADM</span>' : ''}</div>
+        </div>
       </div>
-      <div class="${ix.n>0?'p-if':'p-if empty'}">${ix.n>0?ix.IF.toFixed(2):'—'}</div>
+      <div class="rank-stats-row">
+        <div class="rank-stat ${rankStat==='nota'     ?'hl':''}"><div class="rs-v">${nota_str}</div><div class="rs-l">Nota</div></div>
+        <div class="rank-stat ${rankStat==='IF'       ?'hl':''}"><div class="rs-v">${IF_str}</div><div class="rs-l">Índice</div></div>
+        <div class="rank-stat ${rankStat==='gols'     ?'hl':''}"><div class="rs-v">${tg}</div><div class="rs-l">⚽</div></div>
+        <div class="rank-stat ${rankStat==='assists'  ?'hl':''}"><div class="rs-v">${ta}</div><div class="rs-l">🎯</div></div>
+        <div class="rank-stat ${rankStat==='vitorias' ?'hl':''}"><div class="rs-v">${tv}</div><div class="rs-l">🏆</div></div>
+        <div class="rank-stat ${rankStat==='domingos' ?'hl':''}"><div class="rs-v">${nd}</div><div class="rs-l">Dom</div></div>
+      </div>
     </div>`;
   }).join('');
 }
@@ -444,18 +521,21 @@ function openPerfil(id) {
   const j=appData.jogadores.find(x=>x.id===id); if(!j) return;
   const ix=calcIdx(appData.jogadores).find(x=>x.id===id);
   const nd=nDom(j);
-  const tg=j.domingos.reduce((s,d)=>s+d.gols,0);
-  const ta=j.domingos.reduce((s,d)=>s+d.assists,0);
-  const tv=j.domingos.reduce((s,d)=>s+d.vitorias,0);
+  const tg=j.domingos.reduce((s,d)=>s+(d.gols||0),0);
+  const ta=j.domingos.reduce((s,d)=>s+(d.assists||0),0);
+  const tv=j.domingos.reduce((s,d)=>s+(d.vitorias||0),0);
   const histHTML=!j.domingos.length?`<div style="color:var(--t3);font-size:13px;text-align:center;padding:16px">Sem dados registrados</div>`:
     [...j.domingos].reverse().map(d=>`
     <div class="hist">
-      <div class="hdate">${d.data}</div>
+      <div class="hdate">${d.data}${d.ausente?'<span style="color:#ef4444;font-size:10px;margin-left:8px">FALTOU</span>':''}</div>
       <div class="hstats">
-        <div>⚽ <span>${d.gols}</span></div>
-        <div>🎯 <span>${d.assists}</span></div>
-        <div>🏆 <span>${d.vitorias}</span></div>
-        <div>Score <span>${scoreRaw(d.gols,d.assists,d.vitorias).toFixed(4)}</span></div>
+        ${d.ausente
+          ? `<div style="color:var(--t3);font-style:italic;font-size:12px">Contabilizado como falta (domingo sorteado)</div>`
+          : `<div>⚽ <span>${d.gols||0}</span></div>
+             <div>🎯 <span>${d.assists||0}</span></div>
+             <div>🏆 <span>${d.vitorias||0}</span></div>
+             <div>Score <span>${scoreRaw(d.gols||0,d.assists||0,d.vitorias||0).toFixed(4)}</span></div>`
+        }
       </div>
     </div>`).join('');
   const canEditPhoto = currentUser?.id === j.id || currentUser?.isAdmin;
@@ -508,17 +588,14 @@ function abrirUploadFoto(jogadorId) {
     const reader = new FileReader();
     reader.onload = async (ev) => {
       const base64 = ev.target.result;
-      // Save as base64 directly in Firestore (small photos only)
       const j = appData.jogadores.find(x => x.id === jogadorId);
       if (!j) return;
-      // Resize before saving
       const resized = await resizeImage(base64, 200);
       j.foto = resized;
       await firestoreSet('jogadores', jogadorId, j);
       if (currentUser?.id === jogadorId) {
         currentUser.foto = resized;
         localStorage.setItem(LS_USER, JSON.stringify(currentUser));
-        // Update header avatar
         const hAvatar = document.getElementById('hAvatar');
         hAvatar.innerHTML = `<img src="${resized}" style="width:100%;height:100%;border-radius:50%;object-fit:cover">`;
       }
@@ -551,7 +628,6 @@ function resizeImage(base64, maxSize) {
 function renderOpcoes() {
   const v = appData.config?.aleatoriedade??15;
   const isAdmin = currentUser?.isAdmin;
-  // Admins veem o slider interativo, não-admins veem só o valor fixo
   document.getElementById('sliderWrap').style.display = isAdmin ? 'block' : 'none';
   document.getElementById('sliderLocked').style.display = isAdmin ? 'none' : 'block';
   document.getElementById('sliderLockedVal').textContent = v + '%';
@@ -560,10 +636,9 @@ function renderOpcoes() {
   renderRestList();
 }
 function updateAlea() {
-  if(!currentUser?.isAdmin){ 
-    // reset slider to current value
+  if(!currentUser?.isAdmin){
     document.getElementById('sliderAlea').value=appData.config?.aleatoriedade??15;
-    showToast('Sem permissão'); return; 
+    showToast('Sem permissão'); return;
   }
   const v=document.getElementById('sliderAlea').value;
   document.getElementById('aleaVal').textContent=v+'%';
@@ -642,7 +717,8 @@ function renderAdminList() {
       </div>
       ${!isMe?`<button class="btn-sm btn ${isAdm?'btn-danger':'btn-gold'}" style="font-family:inherit;font-size:11px;letter-spacing:0;padding:7px 12px;width:auto" onclick="toggleAdmin('${j.id}')">
         ${isAdm?'Remover':'Tornar admin'}
-      </button>`:''}
+      </button>`:''
+      }
     </div>`;
   }).join('');
 }
@@ -656,36 +732,59 @@ async function toggleAdmin(id) {
 }
 
 // ─── FLOW ────────────────────────────────────────────────────
-let flow={step:'sel',presentes:[],times:[],data:'',statsIdx:0,statsOrder:[],statsData:{}};
+// flow.step: 'sel' → 'times' → (close, back to home with status 'confirmado')
+// after confirmar, home shows times + admin controls (cancelar / concluir)
+// concluir → 'ausentes' step → 'stats' step
+let flow = {
+  step: 'sel',
+  presentes: [],
+  times: [],
+  data: '',
+  // concluir flow
+  ausentes: [],
+  statsIdx: 0,
+  statsOrder: [],
+  statsData: {}
+};
 const T_NAMES=['Time 1','Time 2','Time 3','Time 4'];
 const T_COLORS=['t0','t1','t2','t3'];
 
 function startFlow() {
   if(!currentUser?.isAdmin){showToast('Sem permissão');return;}
   if(appData.jogadores.length<15){showToast('Cadastre pelo menos 15 jogadores');return;}
-  flow={step:'sel',presentes:[],times:[],data:new Date().toLocaleDateString('pt-BR'),statsIdx:0,statsOrder:[],statsData:{}};
+  flow={
+    step:'sel', presentes:[], times:[], data:new Date().toLocaleDateString('pt-BR'),
+    ausentes:[], statsIdx:0, statsOrder:[], statsData:{}
+  };
   appData.restricoes=appData.restricoes.filter(r=>r.duracao!=='domingo');
   saveLocal(); renderFlow();
   document.getElementById('flow').style.display='block';
 }
 function closeFlow() {
-  if(flow.step==='partida'){if(!confirm('Cancelar? Dados não serão salvos.')) return;}
   document.getElementById('flow').style.display='none';
 }
 function renderFlow() {
   const c=document.getElementById('flowContent'),t=document.getElementById('flowTitle');
   if(flow.step==='sel') renderFlowSel(c,t);
   else if(flow.step==='times') renderFlowTimes(c,t);
-  else if(flow.step==='partida') renderFlowPartida(c,t);
+  else if(flow.step==='ausentes') renderFlowAusentes(c,t);
   else if(flow.step==='stats') { t.textContent=`ESTATÍSTICAS ${flow.statsIdx+1}/${flow.statsOrder.length}`; renderStatsStep(c); }
 }
 
 function renderFlowSel(c,t) {
   t.textContent='SELECIONAR PRESENTES';
-  const sel=flow.presentes,n=sel.length,valid=n===15||n===20;
+  const sel=flow.presentes, n=sel.length;
+  const valid=n===15||n===20;
+  const nTimes = n === 15 ? 3 : n === 20 ? 4 : null;
+  const hint = n < 15
+    ? `Selecione <strong style="color:var(--gold)">15</strong> ou <strong style="color:var(--gold)">20</strong> jogadores`
+    : n === 15 || n === 20
+    ? `<span style="color:var(--gold)">✓ ${n} jogadores → ${nTimes} times</span>`
+    : `<span style="color:#ef4444">Selecione exatamente 15 ou 20</span>`;
+
   c.innerHTML=`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div style="font-size:13px;color:var(--t2)">Selecione <strong style="color:var(--gold)">15</strong> ou <strong style="color:var(--gold)">20</strong></div>
+      <div style="font-size:13px;color:var(--t2)">${hint}</div>
       <div style="font-family:'JetBrains Mono',monospace;font-size:22px;color:${valid?'var(--gold)':'var(--t2)'};font-weight:600">${n}</div>
     </div>
     ${appData.jogadores.map(j=>`
@@ -721,27 +820,52 @@ function renderFlowTimes(c,t) {
       </div>`).join('')}
     <div class="row mt12">
       <button class="btn btn-ghost" onclick="resortear()">🔀 RESORTEAR</button>
+      <button class="btn btn-danger" style="flex:0.6" onclick="cancelarSorteio()">✕</button>
       <button class="btn btn-gold" onclick="confirmarTimes()">✅ CONFIRMAR</button>
     </div>`;
 }
 
-function renderFlowPartida(c,t) {
-  t.textContent='PARTIDA EM ANDAMENTO';
-  c.innerHTML=`
-    <div style="text-align:center;padding:24px 0 28px">
-      <img src="logo.jpg" style="width:80px;height:80px;border-radius:12px;border:2px solid var(--border-gold);box-shadow:0 0 30px rgba(201,168,76,.2);margin-bottom:12px;display:block;margin-left:auto;margin-right:auto">
-      <div style="font-family:'Oswald',sans-serif;font-size:22px;font-weight:700;letter-spacing:3px;color:var(--gold-lt)">BOA PELADA!</div>
-      <div style="font-size:12px;color:var(--t2);margin-top:4px">${flow.data}</div>
+// ─── Step: selecionar ausentes (quem faltou) ─────────────────
+function renderFlowAusentes(c,t) {
+  t.textContent = 'QUEM FALTOU?';
+  const todos = flow.times.flat();
+  const aus = flow.ausentes;
+  c.innerHTML = `
+    <div style="font-size:13px;color:var(--t2);margin-bottom:14px">
+      Marque quem estava no sorteio mas <strong style="color:#ef4444">não compareceu</strong>
     </div>
-    ${flow.times.map((tm,ti)=>`
-      <div class="team-card ${T_COLORS[ti]}" style="margin-bottom:8px">
-        <div class="t-name"><div class="t-dot"></div>${T_NAMES[ti]}</div>
-        ${tm.map(id=>{const j=appData.jogadores.find(x=>x.id===id);return`<div class="t-player"><span>${j?.nome||id}</span></div>`;}).join('')}
-      </div>`).join('')}
-    <div class="row mt16">
-      <button class="btn btn-danger" onclick="cancelarPartida()">❌ CANCELAR</button>
-      <button class="btn btn-gold" onclick="finalizarPartida()">🏁 FINALIZAR</button>
+    ${todos.map(id => {
+      const j = appData.jogadores.find(x=>x.id===id);
+      const sel = aus.includes(id);
+      return `<div class="prow ${sel?'sel':''}" onclick="toggleAusente('${id}')" style="${sel?'border-color:#ef4444;background:rgba(239,68,68,.05)':''}">
+        <div class="p-avatar">${j?.nome?.[0]?.toUpperCase()||'?'}</div>
+        <div class="p-name">${j?.nome||id}</div>
+        <div style="font-size:20px">${sel?'❌':'✅'}</div>
+      </div>`;
+    }).join('')}
+    <div style="margin-top:14px">
+      <div style="font-size:11px;color:var(--t3);margin-bottom:10px;text-align:center">
+        ${aus.length > 0 ? `${aus.length} falta${aus.length>1?'s':''} — contabilizadas como domingo para ranking` : 'Ninguém faltou? Ótimo!'}
+      </div>
+      <button class="btn btn-gold" onclick="confirmarAusentes()">CONTINUAR → ESTATÍSTICAS</button>
     </div>`;
+}
+
+function toggleAusente(id) {
+  const i = flow.ausentes.indexOf(id);
+  if (i >= 0) flow.ausentes.splice(i, 1);
+  else flow.ausentes.push(id);
+  renderFlow();
+}
+
+function confirmarAusentes() {
+  // Build stats order: only presentes (not ausentes)
+  flow.statsOrder = flow.times.flat().filter(id => !flow.ausentes.includes(id));
+  flow.statsData = {};
+  flow.statsOrder.forEach(id => { flow.statsData[id] = {gols:0, assists:0, vitorias:0}; });
+  flow.statsIdx = 0;
+  flow.step = 'stats';
+  renderFlow();
 }
 
 function toggleP(id) {
@@ -768,7 +892,6 @@ function sortearTimes() {
     const pos=round%2===0?i%nT:nT-1-(i%nT);
     times[pos].push(scored[i].id);
   }
-  // Local search
   const sum=t=>t.reduce((s,id)=>s+(idxMap[id]?.IF||0),0);
   const imbal=ts=>{let mx=0;for(let i=0;i<ts.length;i++)for(let j=i+1;j<ts.length;j++)mx=Math.max(mx,Math.abs(sum(ts[i])-sum(ts[j])));return mx;};
   let imp=true,it=0;
@@ -778,7 +901,6 @@ function sortearTimes() {
       if(imbal(times)<bef-0.0001)imp=true;else[times[a][p],times[b][q]]=[times[b][q],times[a][p]];
     }
   }
-  // Check restrictions
   let vio=false;
   for(const r of appData.restricoes){
     for(const tm of times){
@@ -791,13 +913,19 @@ function sortearTimes() {
   if(vio){flow._r=(flow._r||0)+1;if(flow._r<15){sortearTimes();return;}showToast('⚠️ Restrições não satisfeitas');}
   flow._r=0;flow.times=times;flow.step='times';renderFlow();
 }
-function resortear(){sortearTimes();}
+
+function resortear(){ sortearTimes(); }
+
+function cancelarSorteio() {
+  if(confirm('Cancelar sorteio?')) closeFlow();
+}
+
 async function confirmarTimes(){
-  flow.step='partida';
-  // Save teams to Firebase so everyone can see
+  // Save to Firebase so all users see the teams
   const timesData = {
     times: flow.times,
     data: flow.data,
+    status: 'confirmado',
     sorteadoEm: Date.now(),
     nomes: flow.times.map(t => t.map(id => {
       const j = appData.jogadores.find(x=>x.id===id);
@@ -807,17 +935,43 @@ async function confirmarTimes(){
   await firestoreSet('config', 'ultimoSorteio', timesData);
   appData.ultimoSorteio = timesData;
   saveLocal();
-  renderFlow();
-}
-function cancelarPartida(){if(confirm('Cancelar? Times descartados.'))document.getElementById('flow').style.display='none';}
-function finalizarPartida(){
-  flow.step='stats';flow.statsIdx=0;
-  flow.statsOrder=flow.times.flat();
-  flow.statsData={};
-  flow.statsOrder.forEach(id=>{flow.statsData[id]={gols:0,assists:0,vitorias:0};});
-  renderFlow();
+  // Close flow and go back to home — home will show times + admin controls
+  document.getElementById('flow').style.display='none';
+  goTo('home');
+  showToast('Times confirmados! ✅ Todos podem ver.');
 }
 
+// ─── HOME admin actions (cancelar / concluir) ─────────────────
+async function cancelarPartidaHome() {
+  if (!currentUser?.isAdmin) return;
+  if (!confirm('Cancelar partida? Os times serão removidos.')) return;
+  await firestoreDelete('config', 'ultimoSorteio');
+  appData.ultimoSorteio = null;
+  saveLocal();
+  renderHome();
+  showToast('Partida cancelada');
+}
+
+async function concluirPartidaHome() {
+  if (!currentUser?.isAdmin) return;
+  const sorteio = appData.ultimoSorteio;
+  if (!sorteio) return;
+  // Load flow data from current sorteio to proceed to ausentes/stats
+  flow = {
+    step: 'ausentes',
+    presentes: sorteio.times.flat(),
+    times: sorteio.times,
+    data: sorteio.data,
+    ausentes: [],
+    statsIdx: 0,
+    statsOrder: [],
+    statsData: {}
+  };
+  renderFlow();
+  document.getElementById('flow').style.display = 'block';
+}
+
+// ─── STATS STEP ───────────────────────────────────────────────
 function renderStatsStep(c) {
   const order=flow.statsOrder,idx=flow.statsIdx,total=order.length;
   if(idx>=total){salvarStats();return;}
@@ -855,17 +1009,33 @@ function statsN(){flow.statsIdx++;renderFlow();}
 function statsB(){flow.statsIdx--;renderFlow();}
 
 async function salvarStats() {
-  const data=flow.data;
-  for(const id in flow.statsData){
-    const j=appData.jogadores.find(x=>x.id===id); if(!j) continue;
-    if(!j.domingos) j.domingos=[];
-    j.domingos.push({data,...flow.statsData[id]});
-    await firestoreSet('jogadores',id,j);
+  const data = flow.data;
+  const todosNoSorteio = flow.times.flat();
+
+  for (const id of todosNoSorteio) {
+    const j = appData.jogadores.find(x => x.id === id);
+    if (!j) continue;
+    if (!j.domingos) j.domingos = [];
+
+    const ausente = flow.ausentes.includes(id);
+    if (ausente) {
+      // Conta o domingo mas sem estatísticas
+      j.domingos.push({ data, ausente: true, gols: 0, assists: 0, vitorias: 0 });
+    } else {
+      const stats = flow.statsData[id] || { gols: 0, assists: 0, vitorias: 0 };
+      j.domingos.push({ data, gols: stats.gols, assists: stats.assists, vitorias: stats.vitorias });
+    }
+    await firestoreSet('jogadores', id, j);
   }
+
+  // Clear the active match from Firebase
+  await firestoreDelete('config', 'ultimoSorteio');
+  appData.ultimoSorteio = null;
+
   saveLocal();
   document.getElementById('flow').style.display='none';
-  showToast('Estatísticas salvas! 🎉');
-  renderHome();
+  showToast('Partida concluída! Estatísticas salvas 🎉');
+  goTo('home');
 }
 
 // ─── EXPORT ──────────────────────────────────────────────────
@@ -874,15 +1044,15 @@ function exportarExcel() {
   let csv='Nome,Nota Opinativa,Índice Final,Score Ajustado,Alpha,Domingos,Gols,Assists,Vitórias\n';
   for(const j of appData.jogadores){
     const ix=idxMap[j.id],nd=nDom(j);
-    const tg=j.domingos.reduce((s,d)=>s+d.gols,0);
-    const ta=j.domingos.reduce((s,d)=>s+d.assists,0);
-    const tv=j.domingos.reduce((s,d)=>s+d.vitorias,0);
+    const tg=j.domingos.reduce((s,d)=>s+(d.gols||0),0);
+    const ta=j.domingos.reduce((s,d)=>s+(d.assists||0),0);
+    const tv=j.domingos.reduce((s,d)=>s+(d.vitorias||0),0);
     csv+=`${j.nome},${j.nota?.toFixed(1)},${ix&&nd>0?ix.IF.toFixed(4):'—'},${ix&&nd>0?ix.sAdj.toFixed(4):'—'},${ix&&nd>0?ix.alpha.toFixed(4):'—'},${nd},${tg},${ta},${tv}\n`;
   }
-  csv+='\n\nHISTÓRICO\nData,Jogador,Gols,Assists,Vitórias,Score\n';
+  csv+='\n\nHISTÓRICO\nData,Jogador,Gols,Assists,Vitórias,Score,Ausente\n';
   for(const j of appData.jogadores)
     for(const d of j.domingos)
-      csv+=`${d.data},${j.nome},${d.gols},${d.assists},${d.vitorias},${scoreRaw(d.gols,d.assists,d.vitorias).toFixed(4)}\n`;
+      csv+=`${d.data},${j.nome},${d.gols||0},${d.assists||0},${d.vitorias||0},${d.ausente?'0':scoreRaw(d.gols||0,d.assists||0,d.vitorias||0).toFixed(4)},${d.ausente?'SIM':'NÃO'}\n`;
   const blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8;'});
   const url=URL.createObjectURL(blob);
   const a=document.createElement('a');a.href=url;a.download=`pelada_${new Date().toISOString().slice(0,10)}.csv`;a.click();
@@ -898,6 +1068,7 @@ async function confirmReset() {
     const[js,rs]=await Promise.all([getDocs(collection(db_fire,'jogadores')),getDocs(collection(db_fire,'restricoes'))]);
     await Promise.all([...js.docs.map(d=>deleteDoc(d.ref)),...rs.docs.map(d=>deleteDoc(d.ref))]);
     await firestoreSet('config','admins',{list:[currentUser.id]});
+    try { await firestoreDelete('config','ultimoSorteio'); } catch(e) {}
   }
   saveLocal();renderHome();showToast('Dados resetados');
 }
@@ -940,13 +1111,18 @@ window.addRestricao=addRestricao;
 window.removerRest=removerRest;
 window.toggleAdmin=toggleAdmin;
 window.toggleP=toggleP;
+window.toggleAusente=toggleAusente;
 window.confirmarPresentes=confirmarPresentes;
+window.confirmarAusentes=confirmarAusentes;
 window.resortear=resortear;
+window.cancelarSorteio=cancelarSorteio;
 window.confirmarTimes=confirmarTimes;
-window.cancelarPartida=cancelarPartida;
-window.finalizarPartida=finalizarPartida;
+window.cancelarPartidaHome=cancelarPartidaHome;
+window.concluirPartidaHome=concluirPartidaHome;
 window.chgS=chgS;
 window.statsN=statsN;
 window.statsB=statsB;
 window.exportarExcel=exportarExcel;
 window.confirmReset=confirmReset;
+window.setRankStat=setRankStat;
+window.setRankDir=setRankDir;
