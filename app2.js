@@ -1299,7 +1299,6 @@ async function adminBaixaAvulsoPresenca(jogadorId) {
   abrirAdminPresenca();
   renderPresenca();
 }
-window.adminBaixaAvulsoPresenca = adminBaixaAvulsoPresenca;
 
 async function adminRemoverPresenca(lista, jogadorId) {
   const presenca = appData.presenca;
@@ -2802,6 +2801,7 @@ function startFlow() {
 }
 
 async function confirmarDataSorteio() {
+  if (!currentUser?.isAdmin) { showToast('Sem permissão'); return; }
   const data = document.getElementById('inputDataSorteio').value.trim();
   if (!data) { showToast('Informe a data da pelada'); return; }
   closeModal('modalDataSorteio');
@@ -3633,6 +3633,7 @@ function renderFinancas() {
 }
 
 function abrirDarBaixa(jogadorId) {
+  if (!currentUser?.isAdmin) { showToast('Sem permissão'); return; }
   const j = appData.jogadores.find(x=>x.id===jogadorId);
   const fin = getFinancasJogador(jogadorId);
   const saldo = totalDebitoJogador(jogadorId);
@@ -3717,6 +3718,7 @@ async function executarBaixa(jogadorId) {
 }
 
 function abrirAddDebito(jogadorId) {
+  if (!currentUser?.isAdmin) { showToast('Sem permissão'); return; }
   const j = appData.jogadores.find(x=>x.id===jogadorId);
   const overlay = document.createElement('div');
   overlay.className = 'overlay open';
@@ -4042,7 +4044,6 @@ window.abrirNovoDomingo=abrirNovoDomingo;
 window.abrirEditDomingo=abrirEditDomingo;
 window.salvarEditDomingo=salvarEditDomingo;
 window.removerDomingo=removerDomingo;
-window.executarRemoverDomingo=executarRemoverDomingo;
 window.executarRemoverDomingo=executarRemoverDomingo;
 window.openModal=openModal;
 window.closeModal=closeModal;
