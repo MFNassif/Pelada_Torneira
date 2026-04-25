@@ -180,6 +180,10 @@ async function loadFB() {
       const sortSnap = await getDoc(doc(db_fire,'config','ultimoSorteio'));
       appData.ultimoSorteio = sortSnap.exists() ? sortSnap.data() : null;
     } catch(e) { appData.ultimoSorteio = null; }
+    try {
+      const histSnap = await getDocs(collection(db_fire,'peladasHist'));
+      appData.peladasHist = histSnap.docs.map(d=>d.data());
+    } catch(e) { appData.peladasHist = []; }
     if (appData.admins.length===0 && currentUser) {
       appData.admins=[currentUser.id];
       await firestoreSet('config','admins',{list:[currentUser.id]});
@@ -202,6 +206,10 @@ function subscribeRT() {
     appData.ultimoSorteio = snap.exists() ? snap.data() : null;
     if (curScreen === 'home') renderHome();
   });
+  onSnapshot(collection(db_fire,'peladasHist'), snap => {
+    appData.peladasHist = snap.docs.map(d=>d.data());
+    if (curScreen === 'home') renderPeladasHistorico();
+  });
 }
 
 function loadLocal() {
@@ -221,8 +229,9 @@ async function firestoreDelete(col, id) {
 // ─── MATH ────────────────────────────────────────────────────
 function scoreRaw(g,a,v) { return +(g + a + W_VIT*v).toFixed(4); }
 function scoreAcum(j) {
-  if (!j.domingos?.length) return 0;
-  const s = j.domingos.map(d=>scoreRaw(d.gols||0,d.assists||0,d.vitorias||0));
+  const ativos = (j.domingos||[]).filter(d=>!d.ausente);
+  if (!ativos.length) return 0;
+  const s = ativos.map(d=>scoreRaw(d.gols||0,d.assists||0,d.vitorias||0));
   return +(s.reduce((a,x)=>a+x,0)/s.length).toFixed(4);
 }
 function nDom(j) { return j.domingos?.length||0; }
@@ -323,38 +332,222 @@ function renderHome() {
     msg.innerHTML = `<div style="font-family:'Oswald',sans-serif;font-size:16px;color:var(--t2);letter-spacing:1px">TIMES AINDA NÃO SORTEADOS</div>`;
     stats.innerHTML = '';
     if (adminControls) adminControls.innerHTML = '';
-    return;
+  } else {
+    const T_COLORS = ['t0','t1','t2','t3'];
+    const statusLabel = sorteio.status === 'confirmado'
+      ? `<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);border-radius:99px;padding:4px 12px;font-size:11px;color:#22c55e;margin-bottom:12px">● PARTIDA EM ANDAMENTO</div>`
+      : '';
+
+    const timesHTML = sorteio.times.map((t, ti) => `
+      <div class="team-card ${T_COLORS[ti]}" style="margin-bottom:8px">
+        <div class="t-name"><div class="t-dot"></div>Time ${ti+1}</div>
+        ${t.map(id => {
+          const j = appData.jogadores.find(x=>x.id===id);
+          return `<div class="t-player"><span>${j?.nome||id}</span></div>`;
+        }).join('')}
+      </div>`).join('');
+
+    msg.innerHTML = statusLabel + timesHTML;
+    stats.innerHTML = `<div style="font-size:10px;color:var(--t3);margin-top:4px">Sorteado em ${sorteio.data}</div>`;
+
+    if (adminControls && isAdmin && sorteio.status === 'confirmado') {
+      adminControls.innerHTML = `
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button class="btn btn-danger" style="flex:1" onclick="cancelarPartidaHome()">❌ CANCELAR</button>
+          <button class="btn btn-gold" style="flex:1" onclick="concluirPartidaHome()">🏁 CONCLUIR</button>
+        </div>`;
+    } else if (adminControls) {
+      adminControls.innerHTML = '';
+    }
   }
 
-  const T_COLORS = ['t0','t1','t2','t3'];
-  const statusLabel = sorteio.status === 'confirmado'
-    ? `<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);border-radius:99px;padding:4px 12px;font-size:11px;color:#22c55e;margin-bottom:12px">● PARTIDA EM ANDAMENTO</div>`
-    : '';
-
-  const timesHTML = sorteio.times.map((t, ti) => `
-    <div class="team-card ${T_COLORS[ti]}" style="margin-bottom:8px">
-      <div class="t-name"><div class="t-dot"></div>Time ${ti+1}</div>
-      ${t.map(id => {
-        const j = appData.jogadores.find(x=>x.id===id);
-        return `<div class="t-player"><span>${j?.nome||id}</span></div>`;
-      }).join('')}
-    </div>`).join('');
-
-  msg.innerHTML = statusLabel + timesHTML;
-  stats.innerHTML = `<div style="font-size:10px;color:var(--t3);margin-top:4px">Sorteado em ${sorteio.data}</div>`;
-
-  // Admin controls for active match
-  if (adminControls && isAdmin && sorteio.status === 'confirmado') {
-    adminControls.innerHTML = `
-      <div style="display:flex;gap:8px;margin-top:12px">
-        <button class="btn btn-danger" style="flex:1" onclick="cancelarPartidaHome()">❌ CANCELAR</button>
-        <button class="btn btn-gold" style="flex:1" onclick="concluirPartidaHome()">🏁 CONCLUIR</button>
-      </div>`;
-  } else if (adminControls) {
-    adminControls.innerHTML = '';
-  }
+  renderPeladasHistorico();
 }
 
+// ─── HISTÓRICO DE PELADAS NA HOME ────────────────────────────
+function renderPeladasHistorico() {
+  const container = document.getElementById('homePeladasHist');
+  if (!container) return;
+  const peladas = appData.peladasHist || [];
+  if (!peladas.length) { container.innerHTML = ''; return; }
+  const sorted = [...peladas].sort((a,b) => (b.savedAt||0) - (a.savedAt||0));
+  container.innerHTML = `
+    <div class="section-lbl" style="margin-top:16px">PELADAS ANTERIORES</div>
+    ${sorted.map(p => {
+      const votAberta = p.votacao?.status === 'aberta';
+      const podeVotar = votAberta && currentUser && !currentUser.isGuest
+        && p.votacao?.elegiveisVotar?.includes(currentUser.id)
+        && !p.votacao?.votos?.[currentUser.id];
+      const totalVotos = Object.keys(p.votacao?.votos||{}).length;
+      const totalEleg = p.votacao?.elegiveisVotar?.length||0;
+      const mvpNome = p.mvp?.nome || (votAberta ? '...' : '—');
+      return `
+      <div class="pelada-hist-card" onclick="openPeladaDetalhe('${p.id}')" style="${podeVotar?'border-color:rgba(234,179,8,.5);':''}" >
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="font-size:18px">${podeVotar?'⭐':'🏆'}</div>
+          <div style="flex:1">
+            <div style="font-family:'Oswald',sans-serif;font-size:14px;font-weight:700;letter-spacing:1px;color:var(--gold-lt)">PELADA DO TORNEIRA ${p.data}</div>
+            <div style="font-size:11px;color:var(--t2);margin-top:2px">
+              ${p.jogadores?.filter(j=>!j.ausente).length||0} jogadores ·
+              ${votAberta
+                ? `<span style="color:#eab308">⏳ Votação: ${totalVotos}/${totalEleg}</span>`
+                : `MVP: ${mvpNome}`}
+            </div>
+          </div>
+          <div style="color:${podeVotar?'#eab308':'var(--t3)'};font-size:16px">${podeVotar?'VOTAR':'›'}</div>
+        </div>
+      </div>`;
+    }).join('')}`;
+}
+
+// ─── DETALHE DA PELADA ────────────────────────────────────────
+function openPeladaDetalhe(peladaId) {
+  const p = (appData.peladasHist||[]).find(x=>x.id===peladaId);
+  if (!p) return;
+
+  const v = p.votacao;
+  const meuVoto = v?.votos?.[currentUser?.id];
+  const jaVotou = !!meuVoto;
+  const podeVotar = currentUser && !currentUser.isGuest
+    && v?.status === 'aberta'
+    && v?.elegiveisVotar?.includes(currentUser.id)
+    && !jaVotou
+    && !v?.nominees?.find(n => n.id === currentUser.id); // nominees cannot vote for themselves... actually they can for others
+  // Actually: nominees CAN vote, just not for themselves (handled in votarMvp)
+  const podeVotarFinal = currentUser && !currentUser.isGuest
+    && v?.status === 'aberta'
+    && v?.elegiveisVotar?.includes(currentUser.id)
+    && !jaVotou;
+
+  // Time remaining
+  let tempoHTML = '';
+  if (v?.status === 'aberta') {
+    const remaining = Math.max(0, v.elapsesAt - Date.now());
+    const horas = Math.floor(remaining / 3600000);
+    const min = Math.floor((remaining % 3600000) / 60000);
+    const totalVotos = Object.keys(v.votos||{}).length;
+    const totalEleg = v.elegiveisVotar?.length || 0;
+    tempoHTML = `<div style="background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.25);border-radius:10px;padding:12px 14px;margin-bottom:14px">
+      <div style="font-size:9px;letter-spacing:2px;text-transform:uppercase;color:#eab308;font-weight:600;margin-bottom:6px">⏳ VOTAÇÃO MVP ABERTA</div>
+      <div style="font-size:12px;color:var(--t2)">Encerra em <strong style="color:var(--text)">${horas}h ${min}min</strong> · ${totalVotos}/${totalEleg} votos</div>
+    </div>`;
+  }
+
+  // Voting UI
+  let votacaoHTML = '';
+  if (v && v.nominees?.length > 0) {
+    if (v.status === 'encerrada' || p.mvp) {
+      // Show result
+      const contagem = {};
+      for (const vt of Object.values(v.votos||{})) contagem[vt] = (contagem[vt]||0)+1;
+      votacaoHTML = `
+        <div class="section-lbl">VOTAÇÃO MVP</div>
+        ${v.nominees.map(n => {
+          const votos = contagem[n.id]||0;
+          const isWinner = p.mvp?.id === n.id;
+          return `<div style="background:${isWinner?'rgba(201,168,76,.1)':'var(--s2)'};border:1px solid ${isWinner?'var(--border-gold)':'var(--border)'};border-radius:10px;padding:11px 14px;margin-bottom:8px;display:flex;align-items:center;gap:10px">
+            <div style="font-size:20px">${isWinner?'⭐':'👤'}</div>
+            <div style="flex:1">
+              <div style="font-weight:600;font-size:14px;color:${isWinner?'var(--gold-lt)':'var(--text)'}">${n.nome}${isWinner?' <span style="font-size:10px;color:var(--gold)">MVP</span>':''}</div>
+              <div style="font-size:11px;color:var(--t2)">Score ${n.scoreDia.toFixed(2)} · ⚽${n.gols} 🎯${n.assists} 🏆${n.vitorias}</div>
+            </div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:16px;color:${isWinner?'var(--gold)':'var(--t2)'};">${votos} voto${votos!==1?'s':''}</div>
+          </div>`;
+        }).join('')}`;
+    } else if (v.status === 'aberta') {
+      // Show voting buttons if eligible
+      if (podeVotarFinal) {
+        votacaoHTML = `
+          <div class="section-lbl">VOTE NO MVP</div>
+          <div style="font-size:12px;color:var(--t2);margin-bottom:12px">Quem foi o melhor dessa pelada?</div>
+          ${v.nominees.map(n => {
+            const isSelf = n.id === currentUser?.id;
+            return `<div style="background:var(--s2);border:1px solid var(--border-gold);border-radius:10px;padding:11px 14px;margin-bottom:8px;display:flex;align-items:center;gap:10px">
+              <div style="flex:1">
+                <div style="font-weight:600;font-size:14px">${n.nome}${isSelf?' <span style="font-size:10px;color:var(--t2)">(você)</span>':''}</div>
+                <div style="font-size:11px;color:var(--t2)">Score ${n.scoreDia.toFixed(2)} · ⚽${n.gols} 🎯${n.assists} 🏆${n.vitorias}</div>
+              </div>
+              ${isSelf
+                ? `<div style="font-size:11px;color:var(--t3);font-style:italic">Não pode votar em si</div>`
+                : `<button class="btn btn-gold" style="width:auto;padding:8px 16px;font-size:13px" onclick="votarMvp('${p.id}','${n.id}')">VOTAR</button>`
+              }
+            </div>`;
+          }).join('')}`;
+      } else if (jaVotou) {
+        const nomineeVotado = v.nominees.find(n=>n.id===meuVoto);
+        votacaoHTML = `
+          <div class="section-lbl">VOTAÇÃO MVP</div>
+          <div style="background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px;font-size:13px;color:var(--t2)">
+            ✅ Você votou em <strong style="color:var(--text)">${nomineeVotado?.nome||meuVoto}</strong>. Aguardando demais votantes.
+          </div>
+          ${v.nominees.map(n => `
+            <div style="background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:6px;display:flex;align-items:center;gap:10px">
+              <div style="flex:1"><div style="font-weight:600;font-size:13px">${n.nome}</div>
+              <div style="font-size:11px;color:var(--t2)">Score ${n.scoreDia.toFixed(2)} · ⚽${n.gols} 🎯${n.assists} 🏆${n.vitorias}</div></div>
+              ${meuVoto===n.id?'<div style="color:var(--gold);font-size:12px">✅ Seu voto</div>':''}
+            </div>`).join('')}`;
+      } else {
+        // Not eligible to vote
+        const totalVotos = Object.keys(v.votos||{}).length;
+        const totalEleg = v.elegiveisVotar?.length || 0;
+        votacaoHTML = `
+          <div class="section-lbl">VOTAÇÃO MVP</div>
+          <div style="font-size:12px;color:var(--t2);margin-bottom:10px">Votação em andamento (${totalVotos}/${totalEleg}). Candidatos:</div>
+          ${v.nominees.map(n => `
+            <div style="background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:6px">
+              <div style="font-weight:600;font-size:13px">${n.nome}</div>
+              <div style="font-size:11px;color:var(--t2)">Score ${n.scoreDia.toFixed(2)} · ⚽${n.gols} 🎯${n.assists} 🏆${n.vitorias}</div>
+            </div>`).join('')}`;
+      }
+    }
+  }
+
+  // Podium block
+  let podioHTML = '';
+  if (p.podio) {
+    const medals = ['🥇','🥈','🥉'];
+    const lugares = [p.podio.primeiro, p.podio.segundo, p.podio.terceiro];
+    podioHTML = `<div class="section-lbl" style="margin-top:14px">PÓDIO DO DIA</div>
+      <div style="display:flex;gap:8px;margin-bottom:14px">
+        ${lugares.map((pl,i) => pl ? `
+          <div style="flex:1;background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:10px 8px;text-align:center">
+            <div style="font-size:22px">${medals[i]}</div>
+            <div style="font-size:11px;font-weight:600;margin-top:4px;color:var(--text)">${pl.nome}</div>
+            <div style="font-size:10px;color:var(--t2);margin-top:2px">${pl.scoreDia.toFixed(2)}</div>
+          </div>` : '').join('')}
+      </div>`;
+  }
+
+  // Full stats table
+  const rows = (p.jogadores||[])
+    .filter(j => !j.ausente)
+    .sort((a,b) => b.scoreDia - a.scoreDia)
+    .map((j,i) => {
+      const isMvp = p.mvp?.id === j.id;
+      const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':`#${i+1}`;
+      return `
+      <div class="prow rank-row" style="${isMvp?'border-color:var(--gold);background:rgba(201,168,76,.06)':''}">
+        <div class="rank-row-top">
+          <div class="rank-n ${i===0?'g':i===1?'s':i===2?'b':''}">${medal}</div>
+          <div class="rank-name-col">
+            <div class="p-name">${j.nome}${isMvp?' <span style="background:linear-gradient(135deg,var(--gold),var(--gold-lt));color:#000;font-size:9px;padding:2px 8px;border-radius:99px;font-family:Oswald,sans-serif;letter-spacing:1px;margin-left:5px">MVP ⭐</span>':''}</div>
+          </div>
+        </div>
+        <div class="rank-stats-row">
+          <div class="rank-stat"><div class="rs-v">${j.scoreDia.toFixed(2)}</div><div class="rs-l">Score</div></div>
+          <div class="rank-stat"><div class="rs-v">${j.gols}</div><div class="rs-l">⚽</div></div>
+          <div class="rank-stat"><div class="rs-v">${j.assists}</div><div class="rs-l">🎯</div></div>
+          <div class="rank-stat"><div class="rs-v">${j.vitorias}</div><div class="rs-l">🏆</div></div>
+        </div>
+      </div>`;
+    }).join('');
+
+  document.getElementById('peladaDetalheTitle').textContent = `PELADA ${p.data}`;
+  document.getElementById('peladaDetalheMvp').innerHTML = tempoHTML + podioHTML + votacaoHTML;
+  document.getElementById('peladaDetalheList').innerHTML = `<div class="section-lbl" style="margin-top:4px">ESTATÍSTICAS COMPLETAS</div>` + rows;
+  openModal('modalPeladaDetalhe');
+}
+window.openPeladaDetalhe = openPeladaDetalhe;
 // ─── JOGADORES ───────────────────────────────────────────────
 function renderJogs() {
   const list=document.getElementById('jogList');
@@ -481,6 +674,7 @@ function renderRankList() {
       case 'assists':  va = a.ta;   vb = b.ta;   break;
       case 'vitorias': va = a.tv;   vb = b.tv;   break;
       case 'domingos': va = a.nd;   vb = b.nd;   break;
+      case 'mvps':     va = a.j.mvps||0; vb = b.j.mvps||0; break;
       default:         va = a.IF;   vb = b.IF;
     }
     return mul * (va - vb);
@@ -496,21 +690,24 @@ function renderRankList() {
 
     const IF_str  = nd > 0 && ix ? ix.IF.toFixed(2)  : '—';
     const nota_str = j.nota?.toFixed(1) ?? '—';
+    const mvps = j.mvps || 0;
 
     return `<div class="prow rank-row" onclick="openPerfil('${j.id}')">
       <div class="rank-row-top">
         <div class="rank-n ${cl}">${medal}</div>
         <div class="rank-name-col">
-          <div class="p-name">${j.nome}${isAdm ? '<span class="badge-adm">ADM</span>' : ''}</div>
+          <div class="p-name">${j.nome}${isAdm ? '<span class="badge-adm">ADM</span>' : ''}${mvps>0?`<span style="background:linear-gradient(135deg,var(--gold),var(--gold-lt));color:#000;font-size:8px;padding:1px 6px;border-radius:99px;font-family:Oswald,sans-serif;letter-spacing:1px;margin-left:5px">⭐${mvps}</span>`:''}
+          </div>
         </div>
       </div>
       <div class="rank-stats-row">
         <div class="rank-stat ${rankStat==='nota'     ?'hl':''}"><div class="rs-v">${nota_str}</div><div class="rs-l">Nota</div></div>
-        <div class="rank-stat ${rankStat==='IF'       ?'hl':''}"><div class="rs-v">${IF_str}</div><div class="rs-l">Índice</div></div>
+        <div class="rank-stat ${rankStat==='IF'       ?'hl':''}"><div class="rs-v">${IF_str}</div><div class="rs-l">Rating</div></div>
         <div class="rank-stat ${rankStat==='gols'     ?'hl':''}"><div class="rs-v">${tg}</div><div class="rs-l">⚽</div></div>
         <div class="rank-stat ${rankStat==='assists'  ?'hl':''}"><div class="rs-v">${ta}</div><div class="rs-l">🎯</div></div>
         <div class="rank-stat ${rankStat==='vitorias' ?'hl':''}"><div class="rs-v">${tv}</div><div class="rs-l">🏆</div></div>
         <div class="rank-stat ${rankStat==='domingos' ?'hl':''}"><div class="rs-v">${nd}</div><div class="rs-l">Dom</div></div>
+        <div class="rank-stat ${rankStat==='mvps'     ?'hl':''}"><div class="rs-v">${mvps>0?'⭐'+mvps:'—'}</div><div class="rs-l">MVP</div></div>
       </div>
     </div>`;
   }).join('');
@@ -524,21 +721,29 @@ function openPerfil(id) {
   const tg=j.domingos.reduce((s,d)=>s+(d.gols||0),0);
   const ta=j.domingos.reduce((s,d)=>s+(d.assists||0),0);
   const tv=j.domingos.reduce((s,d)=>s+(d.vitorias||0),0);
-  const histHTML=!j.domingos.length?`<div style="color:var(--t3);font-size:13px;text-align:center;padding:16px">Sem dados registrados</div>`:
-    [...j.domingos].reverse().map(d=>`
-    <div class="hist">
-      <div class="hdate">${d.data}${d.ausente?'<span style="color:#ef4444;font-size:10px;margin-left:8px">FALTOU</span>':''}</div>
-      <div class="hstats">
-        ${d.ausente
-          ? `<div style="color:var(--t3);font-style:italic;font-size:12px">Contabilizado como falta (domingo sorteado)</div>`
-          : `<div>⚽ <span>${d.gols||0}</span></div>
-             <div>🎯 <span>${d.assists||0}</span></div>
-             <div>🏆 <span>${d.vitorias||0}</span></div>
-             <div>Score <span>${scoreRaw(d.gols||0,d.assists||0,d.vitorias||0).toFixed(4)}</span></div>`
-        }
-      </div>
-    </div>`).join('');
-  const canEditPhoto = currentUser?.id === j.id || currentUser?.isAdmin;
+  const isAdmin = currentUser?.isAdmin;
+
+  const histHTML = !j.domingos.length
+    ? `<div style="color:var(--t3);font-size:13px;text-align:center;padding:16px">Sem dados registrados</div>`
+    : [...j.domingos].map((d, i) => {
+        return `<div class="hist">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+            <div class="hdate">${d.data}${d.ausente?'<span style="color:#ef4444;font-size:10px;margin-left:8px">FALTOU</span>':''}</div>
+            ${isAdmin ? `<div style="display:flex;gap:5px">
+              <button class="icon-btn" style="font-size:11px;padding:3px 8px" onclick="abrirEditDomingo('${j.id}',${i})">✏️</button>
+              <button class="icon-btn danger" style="font-size:11px;padding:3px 8px" onclick="removerDomingo('${j.id}',${i})">🗑️</button>
+            </div>` : ''}
+          </div>
+          <div class="hstats">
+            ${d.ausente
+              ? `<div style="color:var(--t3);font-style:italic;font-size:12px">Contabilizado como falta</div>`
+              : `<div>⚽ <span>${d.gols||0}</span></div><div>🎯 <span>${d.assists||0}</span></div><div>🏆 <span>${d.vitorias||0}</span></div><div>Score <span>${scoreRaw(d.gols||0,d.assists||0,d.vitorias||0).toFixed(4)}</span></div>`
+            }
+          </div>
+        </div>`;
+      }).reverse().join('');
+
+  const canEditPhoto = currentUser?.id === j.id || isAdmin;
   const fotoHTML = j.foto
     ? `<img src="${j.foto}" style="width:80px;height:80px;border-radius:50%;object-fit:cover;border:2px solid var(--border-gold);display:block;margin:0 auto 12px">`
     : `<div style="width:80px;height:80px;border-radius:50%;background:var(--s3);border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-family:'Oswald',sans-serif;font-size:32px;color:var(--t2);margin:0 auto 12px">${j.nome[0].toUpperCase()}</div>`;
@@ -551,7 +756,7 @@ function openPerfil(id) {
     <div class="m-title" style="text-align:center">${j.nome}</div>
     <div class="m-sub" style="text-align:center">Nota opinativa: ${j.nota?.toFixed(1)}</div>
     <div class="pills">
-      <div class="pill"><div class="pill-v">${nd>0&&ix?ix.IF.toFixed(2):'—'}</div><div class="pill-l">Índice</div></div>
+      <div class="pill"><div class="pill-v">${nd>0&&ix?ix.IF.toFixed(2):'—'}</div><div class="pill-l">Rating</div></div>
       <div class="pill"><div class="pill-v">${tg}</div><div class="pill-l">Gols</div></div>
       <div class="pill"><div class="pill-v">${ta}</div><div class="pill-l">Assists</div></div>
       <div class="pill"><div class="pill-v">${tv}</div><div class="pill-l">Vitórias</div></div>
@@ -561,18 +766,81 @@ function openPerfil(id) {
       <div class="section-lbl">CÁLCULO DETALHADO</div>
       <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--t2);line-height:2.2">
         n = ${ix.n} · Score acum = ${scoreAcum(j).toFixed(4)}<br>
-        S_adj (shrinkage k=5) = ${ix.sAdj.toFixed(4)}<br>
+        S_adj (Bayesian k=5) = ${ix.sAdj.toFixed(4)}<br>
         S_adj normalizado = ${ix.sAdjN.toFixed(4)}<br>
         Nota normalizada = ${ix.notaN.toFixed(4)}<br>
         α(${ix.n}) = ${ix.alpha.toFixed(4)}<br>
-        <span style="color:var(--gold)">IF = ${ix.alpha.toFixed(4)}×${ix.notaN.toFixed(4)} + ${(1-ix.alpha).toFixed(4)}×${ix.sAdjN.toFixed(4)} = ${ix.IF.toFixed(4)}</span>
+        <span style="color:var(--gold)">Rating = ${ix.alpha.toFixed(4)}×${ix.notaN.toFixed(4)} + ${(1-ix.alpha).toFixed(4)}×${ix.sAdjN.toFixed(4)} = ${ix.IF.toFixed(4)}</span>
       </div>
     </div>`:''}
-    <div class="section-lbl" style="margin-bottom:8px">HISTÓRICO</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <div class="section-lbl" style="margin-bottom:0">HISTÓRICO</div>
+      ${isAdmin ? `<button onclick="abrirNovoDomingo('${j.id}')" style="background:var(--gold-dim);border:1px solid var(--border-gold);border-radius:8px;color:var(--gold);font-size:11px;padding:5px 12px;cursor:pointer;font-family:'DM Sans',sans-serif;font-weight:600">+ ADICIONAR</button>` : ''}
+    </div>
     ${histHTML}`;
   openModal('modalPerfil');
 }
 function openPerfilProprio() { if(currentUser) openPerfil(currentUser.id); }
+
+// ─── EDITAR / ADICIONAR DOMINGO ──────────────────────────────
+let _editDomingo = { jogadorId: null, idx: null };
+
+function abrirNovoDomingo(jogadorId) {
+  _editDomingo = { jogadorId, idx: null };
+  const hoje = new Date().toLocaleDateString('pt-BR');
+  document.getElementById('editDomingoTitle').textContent = 'ADICIONAR DOMINGO';
+  document.getElementById('editDomingoData').value = hoje;
+  document.getElementById('editDomingoGols').value = 0;
+  document.getElementById('editDomingoAssists').value = 0;
+  document.getElementById('editDomingoVitorias').value = 0;
+  document.getElementById('editDomingoAusente').checked = false;
+  openModal('modalEditDomingo');
+}
+
+function abrirEditDomingo(jogadorId, idx) {
+  const j = appData.jogadores.find(x => x.id === jogadorId); if (!j) return;
+  const d = j.domingos[idx]; if (!d) return;
+  _editDomingo = { jogadorId, idx };
+  document.getElementById('editDomingoTitle').textContent = 'EDITAR DOMINGO';
+  document.getElementById('editDomingoData').value = d.data || '';
+  document.getElementById('editDomingoGols').value = d.gols || 0;
+  document.getElementById('editDomingoAssists').value = d.assists || 0;
+  document.getElementById('editDomingoVitorias').value = d.vitorias || 0;
+  document.getElementById('editDomingoAusente').checked = !!d.ausente;
+  openModal('modalEditDomingo');
+}
+
+async function salvarEditDomingo() {
+  if (!currentUser?.isAdmin) { showToast('Sem permissão'); return; }
+  const { jogadorId, idx } = _editDomingo;
+  const j = appData.jogadores.find(x => x.id === jogadorId); if (!j) return;
+  const data     = document.getElementById('editDomingoData').value.trim() || new Date().toLocaleDateString('pt-BR');
+  const gols     = Math.max(0, parseInt(document.getElementById('editDomingoGols').value) || 0);
+  const assists  = Math.max(0, parseInt(document.getElementById('editDomingoAssists').value) || 0);
+  const vitorias = Math.max(0, parseInt(document.getElementById('editDomingoVitorias').value) || 0);
+  const ausente  = document.getElementById('editDomingoAusente').checked;
+  const entry = ausente ? { data, ausente: true, gols:0, assists:0, vitorias:0 } : { data, gols, assists, vitorias };
+  if (!j.domingos) j.domingos = [];
+  if (idx === null) j.domingos.push(entry); else j.domingos[idx] = entry;
+  await firestoreSet('jogadores', jogadorId, j);
+  saveLocal();
+  closeModal('modalEditDomingo');
+  showToast(idx === null ? 'Domingo adicionado ✅' : 'Domingo atualizado ✅');
+  openPerfil(jogadorId);
+}
+
+async function removerDomingo(jogadorId, idx) {
+  if (!currentUser?.isAdmin) return;
+  const j = appData.jogadores.find(x => x.id === jogadorId); if (!j) return;
+  const d = j.domingos[idx];
+  if (!confirm(`Remover domingo ${d?.data}?`)) return;
+  j.domingos.splice(idx, 1);
+  await firestoreSet('jogadores', jogadorId, j);
+  saveLocal();
+  showToast('Domingo removido');
+  openPerfil(jogadorId);
+}
+
 
 // ─── FOTO DE PERFIL ──────────────────────────────────────────
 function abrirUploadFoto(jogadorId) {
@@ -752,8 +1020,16 @@ const T_COLORS=['t0','t1','t2','t3'];
 function startFlow() {
   if(!currentUser?.isAdmin){showToast('Sem permissão');return;}
   if(appData.jogadores.length<15){showToast('Cadastre pelo menos 15 jogadores');return;}
+  openModal('modalDataSorteio');
+  document.getElementById('inputDataSorteio').value = new Date().toLocaleDateString('pt-BR');
+}
+
+function confirmarDataSorteio() {
+  const data = document.getElementById('inputDataSorteio').value.trim();
+  if (!data) { showToast('Informe a data da pelada'); return; }
+  closeModal('modalDataSorteio');
   flow={
-    step:'sel', presentes:[], times:[], data:new Date().toLocaleDateString('pt-BR'),
+    step:'sel', presentes:[], times:[], data,
     ausentes:[], statsIdx:0, statsOrder:[], statsData:{}
   };
   appData.restricoes=appData.restricoes.filter(r=>r.duracao!=='domingo');
@@ -1011,37 +1287,181 @@ function statsB(){flow.statsIdx--;renderFlow();}
 async function salvarStats() {
   const data = flow.data;
   const todosNoSorteio = flow.times.flat();
+  const peladaJogadores = [];
 
   for (const id of todosNoSorteio) {
     const j = appData.jogadores.find(x => x.id === id);
     if (!j) continue;
     if (!j.domingos) j.domingos = [];
-
     const ausente = flow.ausentes.includes(id);
     if (ausente) {
-      // Conta o domingo mas sem estatísticas
       j.domingos.push({ data, ausente: true, gols: 0, assists: 0, vitorias: 0 });
+      peladaJogadores.push({ id, nome: j.nome, gols:0, assists:0, vitorias:0, scoreDia:0, ausente:true });
     } else {
       const stats = flow.statsData[id] || { gols: 0, assists: 0, vitorias: 0 };
       j.domingos.push({ data, gols: stats.gols, assists: stats.assists, vitorias: stats.vitorias });
+      const scoreDia = +(stats.gols + stats.assists + W_VIT * stats.vitorias).toFixed(4);
+      peladaJogadores.push({ id, nome: j.nome, gols:stats.gols, assists:stats.assists, vitorias:stats.vitorias, scoreDia, ausente:false });
     }
     await firestoreSet('jogadores', id, j);
   }
 
-  // Clear the active match from Firebase
+  // Rank presentes by scoreDia to get top-3 nominees for MVP vote
+  const presentes = peladaJogadores.filter(j => !j.ausente)
+    .sort((a,b) => {
+      if (b.scoreDia !== a.scoreDia) return b.scoreDia - a.scoreDia;
+      if (b.gols !== a.gols) return b.gols - a.gols;
+      if (b.assists !== a.assists) return b.assists - a.assists;
+      return b.vitorias - a.vitorias;
+    });
+
+  // Top-3 with score > 0 become nominees (can be fewer if less than 3 scored)
+  const nominees = presentes.filter(p => p.scoreDia > 0).slice(0, 3);
+
+  // Create pelada record (MVP will be filled after vote)
+  const peladaId = 'pelada_' + Date.now();
+  const elapsesAt = Date.now() + 24 * 60 * 60 * 1000; // 24h from now
+  const elegiveisVotar = presentes.map(p => p.id); // only players who played can vote
+
+  const peladaRec = {
+    id: peladaId,
+    data,
+    savedAt: Date.now(),
+    times: flow.times,
+    jogadores: peladaJogadores,
+    mvp: null,
+    podio: null,
+    votacao: nominees.length > 0 ? {
+      status: 'aberta',        // 'aberta' | 'encerrada'
+      nominees: nominees.map(n => ({ id: n.id, nome: n.nome, scoreDia: n.scoreDia, gols: n.gols, assists: n.assists, vitorias: n.vitorias })),
+      votos: {},               // { jogadorId: nomineeId }
+      elegiveisVotar,          // ids who are allowed to vote
+      elapsesAt,               // timestamp 24h after save
+    } : null
+  };
+
+  if (!appData.peladasHist) appData.peladasHist = [];
+  appData.peladasHist.push(peladaRec);
+  await firestoreSet('peladasHist', peladaId, peladaRec);
+
+  // If no nominees (everyone scored 0), just save podium from score sort
+  if (nominees.length === 0) {
+    await finalizarVotacao(peladaId, peladaRec, true);
+  }
+
   await firestoreDelete('config', 'ultimoSorteio');
   appData.ultimoSorteio = null;
-
   saveLocal();
-  document.getElementById('flow').style.display='none';
-  showToast('Partida concluída! Estatísticas salvas 🎉');
+  document.getElementById('flow').style.display = 'none';
+
+  if (nominees.length > 0) {
+    showToast('📊 Estatísticas salvas! Votação MVP aberta por 24h ⭐');
+  } else {
+    showToast('Partida concluída! Estatísticas salvas 🎉');
+  }
   goTo('home');
 }
 
+// ─── VOTAÇÃO MVP ─────────────────────────────────────────────
+async function votarMvp(peladaId, nomineeId) {
+  if (!currentUser || currentUser.isGuest) { showToast('Você precisa estar logado para votar'); return; }
+  const p = (appData.peladasHist||[]).find(x=>x.id===peladaId);
+  if (!p || !p.votacao || p.votacao.status !== 'aberta') { showToast('Votação não está aberta'); return; }
+  if (!p.votacao.elegiveisVotar.includes(currentUser.id)) { showToast('Só quem jogou pode votar'); return; }
+  if (p.votacao.votos[currentUser.id]) { showToast('Você já votou!'); return; }
+  // Cannot vote for yourself
+  if (nomineeId === currentUser.id) { showToast('Você não pode votar em si mesmo'); return; }
+
+  p.votacao.votos[currentUser.id] = nomineeId;
+  await firestoreSet('peladasHist', peladaId, p);
+
+  // Check if all eligible players voted (excluding nominees if they can't self-vote,
+  // but actually nominees CAN vote for other nominees)
+  const totalElegiveis = p.votacao.elegiveisVotar.length;
+  const totalVotos = Object.keys(p.votacao.votos).length;
+  if (totalVotos >= totalElegiveis) {
+    await finalizarVotacao(peladaId, p, false);
+  } else {
+    showToast(`Voto registrado! (${totalVotos}/${totalElegiveis})`);
+    renderPeladasHistorico();
+    // Refresh detalhe modal if open
+    if (document.getElementById('modalPeladaDetalhe').classList.contains('open')) {
+      openPeladaDetalhe(peladaId);
+    }
+  }
+}
+
+async function finalizarVotacao(peladaId, p, semNominees) {
+  if (!semNominees && p.votacao) {
+    // Count votes
+    const contagem = {};
+    for (const v of Object.values(p.votacao.votos)) {
+      contagem[v] = (contagem[v]||0) + 1;
+    }
+    // Find nominee with most votes; tie-break by scoreDia
+    const vencedor = p.votacao.nominees.sort((a,b) => {
+      const va = contagem[a.id]||0, vb = contagem[b.id]||0;
+      if (vb !== va) return vb - va;
+      return b.scoreDia - a.scoreDia;
+    })[0];
+    p.mvp = vencedor || null;
+    p.votacao.status = 'encerrada';
+  }
+
+  // Build podium: top-3 by scoreDia among presentes (independent of vote)
+  const presentes = (p.jogadores||[]).filter(j=>!j.ausente)
+    .sort((a,b) => {
+      if (b.scoreDia !== a.scoreDia) return b.scoreDia - a.scoreDia;
+      if (b.gols !== a.gols) return b.gols - a.gols;
+      if (b.assists !== a.assists) return b.assists - a.assists;
+      return b.vitorias - a.vitorias;
+    });
+
+  p.podio = {
+    primeiro:  presentes[0] || null,
+    segundo:   presentes[1] || null,
+    terceiro:  presentes[2] || null,
+  };
+
+  // Award MVP (1st place in vote) on player record
+  if (p.mvp) {
+    const jMvp = appData.jogadores.find(x => x.id === p.mvp.id);
+    if (jMvp) {
+      jMvp.mvps = (jMvp.mvps || 0) + 1;
+      const lastDom = jMvp.domingos[jMvp.domingos.length - 1];
+      if (lastDom) lastDom.mvp = true;
+      await firestoreSet('jogadores', jMvp.id, jMvp);
+    }
+  }
+
+  await firestoreSet('peladasHist', peladaId, p);
+  // Update local
+  const idx = (appData.peladasHist||[]).findIndex(x=>x.id===peladaId);
+  if (idx>=0) appData.peladasHist[idx] = p;
+  saveLocal();
+
+  showToast(p.mvp ? `⭐ MVP: ${p.mvp.nome}! Votação encerrada.` : 'Votação encerrada!');
+  renderPeladasHistorico();
+  if (document.getElementById('modalPeladaDetalhe').classList.contains('open')) {
+    openPeladaDetalhe(peladaId);
+  }
+}
+
+// Auto-close expired votacoes on load
+async function checkVotacoesExpiradas() {
+  const peladas = appData.peladasHist || [];
+  for (const p of peladas) {
+    if (p.votacao?.status === 'aberta' && Date.now() > p.votacao.elapsesAt) {
+      await finalizarVotacao(p.id, p, false);
+    }
+  }
+}
+
+}
 // ─── EXPORT ──────────────────────────────────────────────────
 function exportarExcel() {
   const idxMap=Object.fromEntries(calcIdx(appData.jogadores).map(i=>[i.id,i]));
-  let csv='Nome,Nota Opinativa,Índice Final,Score Ajustado,Alpha,Domingos,Gols,Assists,Vitórias\n';
+  let csv='Nome,Nota Opinativa,Rating Final,Score Ajustado,Alpha,Domingos,Gols,Assists,Vitórias\n';
   for(const j of appData.jogadores){
     const ix=idxMap[j.id],nd=nDom(j);
     const tg=j.domingos.reduce((s,d)=>s+(d.gols||0),0);
@@ -1102,6 +1522,10 @@ window.salvarJogador=salvarJogador;
 window.removerJog=removerJog;
 window.openPerfil=openPerfil;
 window.openPerfilProprio=openPerfilProprio;
+window.abrirNovoDomingo=abrirNovoDomingo;
+window.abrirEditDomingo=abrirEditDomingo;
+window.salvarEditDomingo=salvarEditDomingo;
+window.removerDomingo=removerDomingo;
 window.openModal=openModal;
 window.closeModal=closeModal;
 window.updateAlea=updateAlea;
@@ -1126,3 +1550,6 @@ window.exportarExcel=exportarExcel;
 window.confirmReset=confirmReset;
 window.setRankStat=setRankStat;
 window.setRankDir=setRankDir;
+window.confirmarDataSorteio=confirmarDataSorteio;
+window.votarMvp=votarMvp;
+window.checkVotacoesExpiradas=checkVotacoesExpiradas;
