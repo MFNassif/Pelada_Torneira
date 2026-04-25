@@ -295,9 +295,6 @@ async function salvarJogador() {
     const j=appData.jogadores.find(x=>x.id===editId);
     if(j){j.nome=nome;j.nota=nota;await firestoreSet('jogadores',editId,j);}
   } else {
-    const possible=fuzzyFind(nome,appData.jogadores);
-    if(possible&&possible.nome.toLowerCase()!==nome.toLowerCase())
-      if(!confirm(`Já existe "${possible.nome}". Cadastrar mesmo assim?`)) return;
     const id='p'+Date.now();
     const nj={id,nome,nota,domingos:[],criadoEm:Date.now()};
     appData.jogadores.push(nj);
@@ -330,7 +327,7 @@ function renderRanking() {
       <div class="rank-n ${cl}">${lbl}</div>
       <div class="p-info">
         <div class="p-name">${ix.nome}</div>
-        <div class="p-meta">Nota: ${ix.nota.toFixed(1)} · α=${ix.alpha.toFixed(4)} · ${ix.n} dom.</div>
+        <div class="p-meta">Nota: ${ix.nota.toFixed(1)} · ${ix.n} domingo${ix.n!==1?'s':''}</div>
       </div>
       <div class="${ix.n>0?'p-if':'p-if empty'}">${ix.n>0?ix.IF.toFixed(2):'—'}</div>
     </div>`;
