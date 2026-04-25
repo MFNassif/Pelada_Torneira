@@ -386,12 +386,13 @@ function openPerfilProprio() { if(currentUser) openPerfil(currentUser.id); }
 // ─── OPCOES ──────────────────────────────────────────────────
 function renderOpcoes() {
   const v = appData.config?.aleatoriedade??15;
-  document.getElementById('sliderAlea').value=v;
-  document.getElementById('aleaVal').textContent=v+'%';
-  // Slider só visível para admins
-  document.getElementById('sliderAlea').disabled = !currentUser?.isAdmin;
-  document.getElementById('sliderAlea').style.opacity = currentUser?.isAdmin ? '1' : '0.3';
-  document.getElementById('sliderAlea').style.pointerEvents = currentUser?.isAdmin ? 'auto' : 'none';
+  const isAdmin = currentUser?.isAdmin;
+  // Admins veem o slider interativo, não-admins veem só o valor fixo
+  document.getElementById('sliderWrap').style.display = isAdmin ? 'block' : 'none';
+  document.getElementById('sliderLocked').style.display = isAdmin ? 'none' : 'block';
+  document.getElementById('sliderLockedVal').textContent = v + '%';
+  document.getElementById('sliderAlea').value = v;
+  document.getElementById('aleaVal').textContent = v + '%';
   renderRestList();
 }
 function updateAlea() {
