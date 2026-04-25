@@ -1027,36 +1027,68 @@ async function desmarcarPresenca() {
 function renderPeladasHistorico() {
   const container = document.getElementById('homePeladasHist');
   if (!container) return;
-  const peladas = appData.peladasHist || [];
-  if (!peladas.length) { container.innerHTML = ''; return; }
-  // Deduplicate by id (prevent duplicates from realtime subscription)
-  const seen = new Set();
-  const unique = peladas.filter(p => { if(!p.id||seen.has(p.id)) return false; seen.add(p.id); return true; });
-  const sorted = [...unique].sort((a,b) => (b.savedAt||0) - (a.savedAt||0));
+  const isAdmin = currentUser?.isAdmin;
+
+  // Collect all unique dates from players' domingos
+  const datasSet = new Set();
+  for (const j of appData.jogadores) {
+    for (const d of (j.domingos||[])) {
+      if (d.data) datasSet.add(d.data);
+    }
+  }
+  // Also include dates from peladasHist that might not be in jogadores yet
+  for (const p of (appData.peladasHist||[])) {
+    if (p.data) datasSet.add(p.data);
+  }
+
+  if (!datasSet.size) { container.innerHTML = ''; return; }
+
+  // Sort dates descending (dd/mm/yyyy format)
+  const parseDMY = s => { const [d,m,y] = s.split('/'); return new Date(+y,+m-1,+d).getTime(); };
+  const datas = [...datasSet].sort((a,b) => parseDMY(b) - parseDMY(a));
+
+  // Deduplicate peladasHist by id
+  const histSeen = new Set();
+  const histUnique = (appData.peladasHist||[]).filter(p => {
+    if (!p.id || histSeen.has(p.id)) return false;
+    histSeen.add(p.id); return true;
+  });
+
   container.innerHTML = `
     <div class="section-lbl" style="margin-top:16px">PELADAS ANTERIORES</div>
-    ${sorted.map(p => {
-      const votAberta = p.votacao?.status === 'aberta';
+    ${datas.map(data => {
+      // Find matching peladaHist record for this date
+      const p = histUnique.find(x => x.data === data);
+      const votAberta = p?.votacao?.status === 'aberta';
       const podeVotar = votAberta && currentUser && !currentUser.isGuest
         && p.votacao?.elegiveisVotar?.includes(currentUser.id)
         && !p.votacao?.votos?.[currentUser.id];
-      const totalVotos = Object.keys(p.votacao?.votos||{}).length;
-      const totalEleg = p.votacao?.elegiveisVotar?.length||0;
-      const mvpNome = p.mvp?.nome || (votAberta ? '...' : '—');
+      const totalVotos = Object.keys(p?.votacao?.votos||{}).length;
+      const totalEleg = p?.votacao?.elegiveisVotar?.length||0;
+      const mvpNome = p?.mvp?.nome || (votAberta ? '...' : '—');
+      // Count players who played this date (from jogadores' domingos)
+      const jogadoresNaData = appData.jogadores.filter(j =>
+        (j.domingos||[]).some(d => d.data === data && !d.ausente)
+      ).length;
+
       return `
-      <div class="pelada-hist-card" onclick="openPeladaDetalhe('${p.id}')" style="${podeVotar?'border-color:rgba(234,179,8,.5);':''}" >
+      <div class="pelada-hist-card" onclick="${p ? `openPeladaDetalhe('${p.id}')` : ''}" style="cursor:${p?'pointer':'default'};${podeVotar?'border-color:rgba(234,179,8,.5);':''}">
         <div style="display:flex;align-items:center;gap:10px">
           <div style="font-size:18px">${podeVotar?'⭐':'🏆'}</div>
           <div style="flex:1">
-            <div style="font-family:'Oswald',sans-serif;font-size:14px;font-weight:700;letter-spacing:1px;color:var(--gold-lt)">PELADA DO TORNEIRA ${p.data}</div>
+            <div style="font-family:'Oswald',sans-serif;font-size:14px;font-weight:700;letter-spacing:1px;color:var(--gold-lt)">PELADA DO TORNEIRA ${data}</div>
             <div style="font-size:11px;color:var(--t2);margin-top:2px">
-              ${p.jogadores?.filter(j=>!j.ausente).length||0} jogadores ·
-              ${votAberta
+              ${jogadoresNaData} jogadores
+              ${p ? ` · ${votAberta
                 ? `<span style="color:#eab308">⏳ Votação: ${totalVotos}/${totalEleg}</span>`
-                : `MVP: ${mvpNome}`}
+                : `MVP: ${mvpNome}`}` : ''}
             </div>
           </div>
-          <div style="color:${podeVotar?'#eab308':'var(--t3)'};font-size:16px">${podeVotar?'VOTAR':'›'}</div>
+          <div style="display:flex;align-items:center;gap:6px">
+            ${isAdmin && p && votAberta ? `<button onclick="event.stopPropagation();encerrarVotacaoForce('${p.id}')" style="background:rgba(234,179,8,.15);border:1px solid rgba(234,179,8,.3);border-radius:8px;color:#eab308;font-size:11px;padding:4px 10px;cursor:pointer;font-family:'DM Sans',sans-serif">⚡ MVP</button>` : ''}
+            ${isAdmin && p ? `<button onclick="event.stopPropagation();excluirPelada('${p.id}')" style="background:rgba(255,68,68,.1);border:1px solid rgba(255,68,68,.2);border-radius:8px;color:#ef4444;font-size:11px;padding:4px 10px;cursor:pointer;font-family:'DM Sans',sans-serif">🗑️</button>` : ''}
+            <div style="color:${podeVotar?'#eab308':'var(--t3)'};font-size:16px">${podeVotar?'VOTAR':'›'}</div>
+          </div>
         </div>
       </div>`;
     }).join('')}`;
@@ -2050,6 +2082,7 @@ function closeFlow() {
   document.getElementById('flow').style.display='none';
 }
 function renderFlow() {
+  if(flow.step==='saving') return; // actively saving, do not re-render
   const c=document.getElementById('flowContent'),t=document.getElementById('flowTitle');
   if(flow.step==='sel') renderFlowSel(c,t);
   else if(flow.step==='times') renderFlowTimes(c,t);
@@ -2339,7 +2372,20 @@ async function concluirPartidaHome() {
 // ─── STATS STEP ───────────────────────────────────────────────
 function renderStatsStep(c) {
   const order=flow.statsOrder,idx=flow.statsIdx,total=order.length;
-  if(idx>=total){if(!flow._saving){flow._saving=true;salvarStats();}return;}
+  if(idx>=total){
+    if(!flow._saving){
+      flow._saving=true;
+      flow.step='saving'; // prevent renderFlow from re-entering stats
+      // Show saving indicator
+      c.innerHTML=`<div style="text-align:center;padding:40px 20px">
+        <div class="spin" style="margin:0 auto 16px"></div>
+        <div style="font-family:'Oswald',sans-serif;font-size:18px;letter-spacing:2px;color:var(--gold-lt)">SALVANDO...</div>
+        <div style="font-size:12px;color:var(--t2);margin-top:8px">Aguarde enquanto as estatísticas são salvas</div>
+      </div>`;
+      salvarStats();
+    }
+    return;
+  }
   const id=order[idx];
   const j=appData.jogadores.find(x=>x.id===id);
   const ti=flow.times.findIndex(t=>t.includes(id));
@@ -2429,9 +2475,14 @@ async function salvarStats() {
     } : null
   };
 
-  if (!appData.peladasHist) appData.peladasHist = [];
-  appData.peladasHist.push(peladaRec);
+  // Save to Firebase ONLY — onSnapshot will update appData.peladasHist automatically
+  // Do NOT push locally here to avoid duplication when onSnapshot fires
   await firestoreSet('peladasHist', peladaId, peladaRec);
+  if (!appData.peladasHist) appData.peladasHist = [];
+  // Only add locally if not already there (guard against double-call)
+  if (!appData.peladasHist.find(x => x.id === peladaId)) {
+    appData.peladasHist.push(peladaRec);
+  }
 
   // If no nominees (everyone scored 0), just save podium from score sort
   if (nominees.length === 0) {
