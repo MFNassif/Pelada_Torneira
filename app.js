@@ -18,7 +18,7 @@ const LS_LOCAL    = 'pelada_local_v2';
 let db_fire = null;
 let useFirebase = false;
 let currentUser = null;
-let appData = { jogadores: [], restricoes: [], config: { aleatoriedade: 15 }, admins: [], nextId: 1 };
+let appData = { jogadores: [], restricoes: [], config: { aleatoriedade: 15 }, admins: [], nextId: 1, presenca: null, financas: {} };
 let unsubscribe = null;
 
 // ─── FIREBASE ────────────────────────────────────────────────
@@ -72,6 +72,8 @@ async function boot() {
   currentUser = JSON.parse(su);
   currentUser.isAdmin = (appData.admins || []).includes(currentUser.id);
   localStorage.setItem(LS_USER, JSON.stringify(currentUser));
+  // Auto-check: remove avulsos não pagos após sáb 12h
+  await checkAvulsosInadimplentes();
   showApp();
 }
 
@@ -200,6 +202,23 @@ async function loadFB() {
       const histSnap = await getDocs(collection(db_fire,'peladasHist'));
       appData.peladasHist = histSnap.docs.map(d=>d.data());
     } catch(e) { appData.peladasHist = []; }
+    // Load presença
+    try {
+      const presSnap = await getDoc(doc(db_fire,'config','presenca'));
+      appData.presenca = presSnap.exists() ? presSnap.data() : null;
+    } catch(e) { appData.presenca = null; }
+    // Load finanças
+    try {
+      const finSnap = await getDocs(collection(db_fire,'financas'));
+      appData.financas = {};
+      finSnap.docs.forEach(d => { appData.financas[d.id] = d.data(); });
+    } catch(e) { appData.financas = {}; }
+    // Load comunicados
+    try {
+      const comSnap = await getDocs(collection(db_fire,'comunicados'));
+      appData.comunicados = comSnap.docs.map(d=>d.data()).sort((a,b)=>(b.criadoEm||0)-(a.criadoEm||0));
+    } catch(e) { appData.comunicados = []; }
+
     if (appData.admins.length===0 && currentUser) {
       appData.admins=[currentUser.id];
       await firestoreSet('config','admins',{list:[currentUser.id]});
@@ -225,6 +244,20 @@ function subscribeRT() {
   onSnapshot(collection(db_fire,'peladasHist'), snap => {
     appData.peladasHist = snap.docs.map(d=>d.data());
     if (curScreen === 'home') renderPeladasHistorico();
+  });
+  onSnapshot(doc(db_fire,'config','presenca'), snap => {
+    appData.presenca = snap.exists() ? snap.data() : null;
+    if (curScreen === 'home') renderPresenca();
+  });
+  onSnapshot(collection(db_fire,'financas'), snap => {
+    appData.financas = {};
+    snap.docs.forEach(d => { appData.financas[d.id] = d.data(); });
+    if (curScreen === 'financas') renderFinancas();
+    if (curScreen === 'home') renderPresenca();
+  });
+  onSnapshot(collection(db_fire,'comunicados'), snap => {
+    appData.comunicados = snap.docs.map(d=>d.data()).sort((a,b)=>(b.criadoEm||0)-(a.criadoEm||0));
+    if (curScreen === 'home') renderComunicados();
   });
 }
 
@@ -262,14 +295,15 @@ function scoreAdj(j,med) {
   return +((n*scoreAcum(j)+K_SHRINKAGE*med)/(n+K_SHRINKAGE)).toFixed(4);
 }
 function alpha(n) {
-  // Weight table: domingo 0→1, 1→10, 2→20, 3→25, 4→35, 5→40,
-  // 6→45, 7→50, then linear to 75% at domingo 20, capped at 75%
-  const table = [1, 10, 20, 25, 35, 40, 45, 50];
-  if (n < table.length) return +(table[n] / 100).toFixed(4);
-  // Linear interpolation from 50% at n=7 to 75% at n=20
-  if (n >= 20) return 0.75;
-  const pct = 50 + (n - 7) * (25 / 13);
-  return +(Math.min(pct, 75) / 100).toFixed(4);
+  // Peso da NOTA OPINATIVA — decresce conforme acumulam domingos
+  // dom 0→1.0, 1→0.9, 2→0.8, 3→0.75, 4→0.65, 5→0.6, 6→0.55, 7→0.5
+  // dom 8-19: interpolação linear de 0.50 até 0.25
+  // dom 20+: cap mínimo de 0.25 (75% stats)
+  const table = [1.0, 0.9, 0.8, 0.75, 0.65, 0.6, 0.55, 0.5];
+  if (n < table.length) return +table[n].toFixed(4);
+  if (n >= 20) return 0.25;
+  // Linear interpolation from 0.50 at n=7 to 0.25 at n=20
+  return +(0.50 + (n - 7) * (0.25 - 0.50) / (20 - 7)).toFixed(4);
 }
 function normGroup(vals) {
   const mn=Math.min(...vals),mx=Math.max(...vals);
@@ -284,9 +318,80 @@ function calcIdx(jogs) {
   const adjN=normGroup(adjs), notN=normGroup(notas);
   return jogs.map((j,i)=>{
     const n=nDomAtivo(j),a=alpha(n);
-    const IF=+(a*notN[i]+(1-a)*adjN[i]).toFixed(4);
+    const IF=+((a*notN[i]+(1-a)*adjN[i])*10).toFixed(4); // 0-10 scale
     return {id:j.id,nome:j.nome,nota:notas[i],notaN:notN[i],sAdj:adjs[i],sAdjN:adjN[i],alpha:a,IF,n,nTotal:nDom(j)};
   });
+}
+
+// ─── FINANÇAS HELPERS ────────────────────────────────────────
+function getFinancasJogador(jogadorId) {
+  return appData.financas?.[jogadorId] || { debitos: [], pagamentos: [] };
+}
+
+function semanasAtraso5du() {
+  const prazo = get5DiasUteis();
+  const hoje = new Date();
+  if (hoje <= prazo) return 0;
+  const diffMs = hoje - prazo;
+  return Math.floor(diffMs / (7 * 24 * 60 * 60 * 1000));
+}
+
+function totalDebitoJogador(jogadorId) {
+  const fin = getFinancasJogador(jogadorId);
+  const total = (fin.debitos||[]).reduce((s,d) => s + (d.valor||0), 0);
+  const pago = (fin.pagamentos||[]).reduce((s,p) => s + (p.valor||0), 0);
+  let saldo = total - pago;
+  // Add automatic weekly late fee for mensalistas with overdue mensal
+  if (jogadorMensalista(jogadorId)) {
+    const temMensalAtrasada = (fin.debitos||[]).some(d => d.tipo === 'mensal' && !d.quitado);
+    const semanas = semanasAtraso5du();
+    if (temMensalAtrasada && semanas > 0) {
+      saldo += semanas * 5; // R$5/week
+    }
+  }
+  return +(saldo).toFixed(2);
+}
+
+function jogadorInadimplente(jogadorId) {
+  return totalDebitoJogador(jogadorId) > 0;
+}
+
+function jogadorMensalista(jogadorId) {
+  const j = appData.jogadores.find(x => x.id === jogadorId);
+  return j?.tipoJogador === 'mensalista';
+}
+
+async function adicionarDebito(jogadorId, tipo, valor, descricao) {
+  const fin = getFinancasJogador(jogadorId);
+  if (!fin.debitos) fin.debitos = [];
+  fin.debitos.push({ id: 'd'+Date.now(), tipo, valor, descricao, data: new Date().toLocaleDateString('pt-BR'), quitado: false });
+  if (!appData.financas) appData.financas = {};
+  appData.financas[jogadorId] = fin;
+  await firestoreSet('financas', jogadorId, fin);
+  saveLocal();
+}
+
+async function darBaixa(jogadorId, valor, descricao) {
+  const fin = getFinancasJogador(jogadorId);
+  if (!fin.pagamentos) fin.pagamentos = [];
+  fin.pagamentos.push({ id: 'p'+Date.now(), valor, descricao, data: new Date().toLocaleDateString('pt-BR') });
+  appData.financas[jogadorId] = fin;
+  await firestoreSet('financas', jogadorId, fin);
+  saveLocal();
+  showToast('Pagamento registrado ✅');
+}
+
+function get5DiasUteis() {
+  const hoje = new Date();
+  const mes = hoje.getMonth(), ano = hoje.getFullYear();
+  let count = 0, dia = 1;
+  while (count < 5) {
+    const d = new Date(ano, mes, dia);
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) count++;
+    if (count < 5) dia++;
+  }
+  return new Date(ano, mes, dia);
 }
 
 // ─── FUZZY ───────────────────────────────────────────────────
@@ -310,6 +415,8 @@ function fuzzyFind(nome,lista) {
 // ─── NAV ─────────────────────────────────────────────────────
 let curScreen='home';
 function goTo(s) {
+  // Close float menu if open
+  document.getElementById('userFloatMenu')?.remove();
   document.querySelectorAll('.screen').forEach(x=>x.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(x=>x.classList.remove('active'));
   document.getElementById('sc-'+s)?.classList.add('active');
@@ -319,6 +426,7 @@ function goTo(s) {
   if(s==='jogadores') renderJogs();
   if(s==='ranking') renderRanking();
   if(s==='opcoes') renderOpcoes();
+  if(s==='financas') renderFinancas();
 }
 function refreshScreen() { goTo(curScreen); }
 
@@ -340,6 +448,8 @@ function showApp() {
   document.getElementById('adminRestBtn').style.display=currentUser?.isAdmin?'block':'none';
   document.getElementById('adminCard').style.display=currentUser?.isAdmin?'block':'none';
   document.getElementById('btnSortear').style.display=currentUser?.isAdmin?'flex':'none';
+  const btnCom = document.getElementById('btnComunicado');
+  if (btnCom) btnCom.style.display = currentUser?.isAdmin ? 'block' : 'none';
   renderHome();
 }
 
@@ -348,6 +458,9 @@ function renderHome() {
   const isAdmin = currentUser?.isAdmin;
   document.getElementById('homeSub').textContent = currentUser ? `Bem-vindo, ${currentUser.nome}!` : '';
   document.getElementById('btnSortear').style.display = isAdmin ? 'flex' : 'none';
+  const btnComH = document.getElementById('btnComunicado');
+  if (btnComH) btnComH.style.display = isAdmin ? 'block' : 'none';
+  renderComunicados();
 
   const sorteio = appData.ultimoSorteio;
   const msg = document.getElementById('homeMsg');
@@ -388,7 +501,378 @@ function renderHome() {
     }
   }
 
+  renderComunicados();
   renderPeladasHistorico();
+  renderPresenca();
+}
+
+// ─── COMUNICADOS ─────────────────────────────────────────────
+function renderComunicados() {
+  const cont = document.getElementById('homeComunicados');
+  if (!cont) return;
+  const coms = appData.comunicados || [];
+  if (!coms.length) { cont.innerHTML = ''; return; }
+  const isAdmin = currentUser?.isAdmin;
+  cont.innerHTML = `
+    <div class="section-lbl" style="margin-top:16px">COMUNICADOS</div>
+    ${coms.map(com => `
+      <div class="card" style="margin-bottom:8px;border-left:3px solid var(--gold);padding-left:14px">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+          <div style="flex:1">
+            <div style="font-family:'Oswald',sans-serif;font-size:13px;font-weight:600;color:var(--gold-lt);letter-spacing:1px;margin-bottom:4px">${com.titulo}</div>
+            <div style="font-size:13px;color:var(--text);line-height:1.6;white-space:pre-wrap">${com.texto}</div>
+            <div style="font-size:10px;color:var(--t3);margin-top:6px">${com.autor} · ${new Date(com.criadoEm).toLocaleDateString('pt-BR')}</div>
+          </div>
+          ${isAdmin ? `<button onclick="removerComunicado('${com.id}')" style="background:none;border:none;color:var(--t3);cursor:pointer;font-size:18px;line-height:1;flex-shrink:0">×</button>` : ''}
+        </div>
+      </div>`).join('')}`;
+}
+
+function abrirNovoComunicado() {
+  if (!currentUser?.isAdmin) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay open';
+  overlay.id = 'modalComunicado';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="mhandle"></div>
+      <div class="m-title">NOVO COMUNICADO</div>
+      <div class="m-sub">Visível para todos na home</div>
+      <div class="field"><label>Título</label><input class="input" id="comTitulo" placeholder="Ex: Cancelamento do domingo" maxlength="60"></div>
+      <div class="field"><label>Mensagem</label><textarea class="input" id="comTexto" rows="4" placeholder="Escreva o comunicado..." style="resize:none;height:auto"></textarea></div>
+      <button class="btn btn-gold" onclick="salvarComunicado()">PUBLICAR</button>
+      <button class="btn btn-ghost mt8" onclick="document.getElementById('modalComunicado').remove()">CANCELAR</button>
+    </div>`;
+  overlay.addEventListener('click', e => { if(e.target===overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+
+async function salvarComunicado() {
+  const titulo = document.getElementById('comTitulo')?.value?.trim();
+  const texto = document.getElementById('comTexto')?.value?.trim();
+  if (!titulo || !texto) { showToast('Preencha título e mensagem'); return; }
+  const id = 'com_' + Date.now();
+  const com = { id, titulo, texto, autor: currentUser.nome, criadoEm: Date.now() };
+  if (!appData.comunicados) appData.comunicados = [];
+  appData.comunicados.unshift(com);
+  await firestoreSet('comunicados', id, com);
+  saveLocal();
+  document.getElementById('modalComunicado')?.remove();
+  renderComunicados();
+  showToast('Comunicado publicado 📢');
+}
+
+async function removerComunicado(id) {
+  if (!currentUser?.isAdmin) return;
+  appData.comunicados = (appData.comunicados||[]).filter(c=>c.id!==id);
+  await firestoreDelete('comunicados', id);
+  saveLocal();
+  renderComunicados();
+  showToast('Comunicado removido');
+}
+
+// ─── PRESENÇA ─────────────────────────────────────────────────
+const DESCRICAO_PELADA = `Pelada do Torneira
+R. Juscelino Barbosa 254
+11:30 às 13:00
+Pix: mfnassif16@gmail.com`;
+
+const REGRAS_PELADA = `• 1ª partida: 10 min (8 primeiros a chegar)
+• Demais partidas: 7 min ou 2 gols
+• Mensalista: R$80/mês, prioridade até Sex 12h
+• Avulso: R$25/pelada, pagar até Sáb 12h
+• Falta sem aviso <24h: mensalista R$10 / avulso R$25
+• Mensalidade em atraso: multa R$5/semana após 5º dia útil`;
+
+function renderPresenca() {
+  const cont = document.getElementById('homePresenca');
+  if (!cont) return;
+  const sorteio = appData.ultimoSorteio;
+  // Presença aparece após resultado MVP da última pelada (ou se nunca houve pelada)
+  const peladas = appData.peladasHist || [];
+  const ultimaPelada = peladas.length > 0 ? [...peladas].sort((a,b)=>(b.savedAt||0)-(a.savedAt||0))[0] : null;
+  const votacaoAberta = ultimaPelada?.votacao?.status === 'aberta';
+  if (!sorteio || sorteio.status !== 'confirmado') { cont.innerHTML = ''; return; }
+  if (votacaoAberta) {
+    cont.innerHTML = `
+      <div class="section-lbl" style="margin-top:16px">LISTA DE PRESENÇA</div>
+      <div class="card" style="text-align:center;padding:20px;border-color:rgba(234,179,8,.2);background:rgba(234,179,8,.04)">
+        <div style="font-size:24px;margin-bottom:8px">⏳</div>
+        <div style="font-family:'Oswald',sans-serif;font-size:14px;letter-spacing:1px;color:var(--gold-lt)">AGUARDANDO RESULTADO MVP</div>
+        <div style="font-size:11px;color:var(--t2);margin-top:6px">A lista de presença será liberada após a votação ser concluída</div>
+      </div>`;
+    return;
+  }
+
+  const presenca = appData.presenca || { confirmados: [], espera: [], data: sorteio.data };
+  const confirmados = presenca.confirmados || [];
+  const espera = presenca.espera || [];
+  const total = confirmados.length;
+  const vagas = total >= 20 ? 20 : 15;
+  const vagasEspera = 5;
+  const horario = total >= 20 ? '11:30 às 13:30' : '11:30 às 13:00';
+
+  const now = Date.now();
+  const peladaDate = parsePeladaDate(sorteio.data);
+  const h24 = 24 * 60 * 60 * 1000;
+  const dentro24h = peladaDate && (peladaDate - now) < h24;
+  // Mensalista priority until Friday 12h before sunday pelada
+  const sexta12h = peladaDate ? (peladaDate - (2*24*60*60*1000) + (12*60*60*1000) - (11.5*60*60*1000)) : null;
+  // simpler: priority period ends Friday 12:00 = sunday 11:30 - ~47.5h
+  const fimPrioridadeMensalista = peladaDate ? peladaDate - (47.5 * 60*60*1000) : null;
+  const dentroPrioridade = fimPrioridadeMensalista && now < fimPrioridadeMensalista;
+  const aposJanelaMensalista = !dentroPrioridade; // avulsos can confirm after friday 12h
+
+  const userId = currentUser?.id;
+  const jaConfirmado = confirmados.includes(userId);
+  const naEspera = espera.includes(userId);
+  const inadimplente = userId && !currentUser?.isGuest ? jogadorInadimplente(userId) : false;
+  const ehMensalista = userId ? jogadorMensalista(userId) : false;
+  const listaCheia = confirmados.length >= vagas;
+  const esperaCheia = espera.length >= vagasEspera;
+
+  // Can confirm: not guest, not inadimplente, has a spot or waiting list available
+  const podeConfirmar = userId && !currentUser?.isGuest && !inadimplente && !jaConfirmado && !naEspera;
+
+  // Build sorted name list
+  const confirmadosNomes = confirmados.map(id => {
+    const j = appData.jogadores.find(x => x.id === id);
+    return { id, nome: j?.nome || id, mensalista: jogadorMensalista(id) };
+  }).sort((a,b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+
+  const esperaNomes = espera.map(id => {
+    const j = appData.jogadores.find(x => x.id === id);
+    return { id, nome: j?.nome || id };
+  });
+
+  const descricaoAtual = DESCRICAO_PELADA.replace('11:30 às 13:00', horario);
+
+  cont.innerHTML = `
+    <div class="section-lbl" style="margin-top:16px">LISTA DE PRESENÇA</div>
+    <div class="card shield-card" style="margin-bottom:12px">
+      <div style="white-space:pre-line;font-size:13px;color:var(--text);line-height:1.7;margin-bottom:14px;font-weight:500">${descricaoAtual}</div>
+
+      ${confirmadosNomes.length > 0 ? `
+      <div style="margin-bottom:10px">
+        ${confirmadosNomes.map((p,i) => `
+          <div style="font-size:13px;padding:3px 0;color:${p.id===userId?'var(--gold)':'var(--text)'};display:flex;align-items:center;gap:6px">
+            <span style="color:var(--t2);min-width:18px">${i+1}.</span>
+            <span>${p.nome}${p.mensalista?'<span style="font-size:9px;color:var(--gold);margin-left:4px">M</span>':''}</span>
+            ${p.id===userId?'<span style="font-size:9px;color:var(--gold)">← você</span>':''}
+          </div>`).join('')}
+      </div>` : `<div style="font-size:12px;color:var(--t3);margin-bottom:10px">Nenhuma confirmação ainda</div>`}
+
+      ${esperaNomes.length > 0 ? `
+      <div style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px">
+        <div style="font-size:10px;letter-spacing:1px;color:var(--t2);margin-bottom:6px">LISTA DE ESPERA</div>
+        ${esperaNomes.map((p,i) => `
+          <div style="font-size:12px;padding:2px 0;color:${p.id===userId?'var(--gold)':'var(--t2)'}">
+            ${i+1}. ${p.nome}${p.id===userId?' ← você':''}
+          </div>`).join('')}
+      </div>` : ''}
+
+      <div style="font-size:10px;color:var(--t3);margin-top:10px;margin-bottom:12px">${total}/${vagas} confirmados · ${espera.length}/${vagasEspera} espera</div>
+
+      ${inadimplente ? `
+        <div style="background:rgba(255,68,68,.1);border:1px solid rgba(255,68,68,.3);border-radius:8px;padding:10px 12px;font-size:12px;color:#ef4444;margin-bottom:10px">
+          ⚠️ Você possui pendências financeiras. Regularize para confirmar presença.
+        </div>` : ''}
+
+      ${jaConfirmado ? `
+        <button class="btn btn-danger" onclick="desmarcarPresenca()" style="font-size:14px">
+          ${dentro24h ? '❌ DESMARCAR (multa R$10)' : 'DESMARCAR'}
+        </button>` :
+       naEspera ? `
+        <button class="btn btn-ghost" onclick="desmarcarPresenca()">SAIR DA LISTA DE ESPERA</button>` :
+       podeConfirmar ? (
+         listaCheia && !ehMensalista && dentro48h ? `
+          <button class="btn btn-ghost" ${esperaCheia?'disabled':''} onclick="confirmarPresenca()">
+            ${esperaCheia ? 'LISTA DE ESPERA CHEIA' : 'ENTRAR NA LISTA DE ESPERA'}
+          </button>` :
+         listaCheia && esperaCheia ? `
+          <button class="btn btn-ghost" disabled>LISTA COMPLETA</button>` :
+         `<button class="btn btn-gold" onclick="confirmarPresenca()">✅ CONFIRMAR PRESENÇA</button>`
+       ) : (!userId || currentUser?.isGuest ? '' :
+        `<button class="btn btn-ghost" disabled>CONFIRMAR PRESENÇA</button>`
+       )}
+    </div>`;
+}
+
+async function checkAvulsosInadimplentes() {
+  if (!appData.presenca?.confirmados) return;
+  const sorteio = appData.ultimoSorteio;
+  if (!sorteio) return;
+  const peladaDate = parsePeladaDate(sorteio.data);
+  if (!peladaDate) return;
+  // Sábado 12h = domingo 11:30 - 23.5h
+  const sab12h = peladaDate - (23.5 * 60 * 60 * 1000);
+  if (Date.now() < sab12h) return; // not yet saturday 12h
+
+  const presenca = appData.presenca;
+  let changed = false;
+  const removidos = [];
+
+  for (const id of [...(presenca.confirmados||[])]) {
+    if (jogadorMensalista(id)) continue;
+    if (!jogadorInadimplente(id)) continue;
+    // Avulso inadimplente after sab 12h — remove from list
+    presenca.confirmados = presenca.confirmados.filter(x=>x!==id);
+    removidos.push(id);
+    changed = true;
+  }
+
+  if (changed) {
+    // Promote from espera
+    for (const removidoId of removidos) {
+      if ((presenca.espera||[]).length > 0) {
+        const promovido = presenca.espera[0];
+        presenca.espera = presenca.espera.slice(1);
+        presenca.confirmados.push(promovido);
+        if (!jogadorMensalista(promovido)) {
+          await adicionarDebito(promovido, 'avulso', 25, `Pelada ${sorteio.data} (promovido)`);
+        }
+      }
+    }
+    appData.presenca = presenca;
+    await firestoreSet('config', 'presenca', presenca);
+    saveLocal();
+  }
+}
+
+function parsePeladaDate(dateStr) {
+  if (!dateStr) return null;
+  // dd/mm/yyyy
+  const parts = dateStr.split('/');
+  if (parts.length !== 3) return null;
+  return new Date(+parts[2], +parts[1]-1, +parts[0], 11, 30).getTime();
+}
+
+async function confirmarPresenca() {
+  if (!currentUser || currentUser.isGuest) { showToast('Faça login para confirmar'); return; }
+  if (jogadorInadimplente(currentUser.id)) { showToast('Regularize suas pendências financeiras'); return; }
+
+  const sorteio = appData.ultimoSorteio;
+  if (!sorteio) return;
+
+  const presenca = appData.presenca || { confirmados: [], espera: [], data: sorteio.data };
+  const confirmados = presenca.confirmados || [];
+  const espera = presenca.espera || [];
+
+  if (confirmados.includes(currentUser.id) || espera.includes(currentUser.id)) {
+    showToast('Você já está na lista'); return;
+  }
+
+  const now = Date.now();
+  const peladaDate = parsePeladaDate(sorteio.data);
+  const h48 = 48 * 60 * 60 * 1000;
+  const dentro48h = peladaDate && (peladaDate - now) < h48;
+  const vagas = confirmados.length >= 20 ? 20 : 15;
+  const listaCheia = confirmados.length >= vagas;
+  const ehMensalista = jogadorMensalista(currentUser.id);
+
+  if (listaCheia) {
+    // During priority window: only mensalistas can confirm
+    if (dentroPrioridade && !ehMensalista) {
+      showToast('⏳ Lista reservada para mensalistas até Sex 12h');
+      return;
+    }
+    // Mensalista after priority window can displace last avulso confirmed
+    if (ehMensalista && aposJanelaMensalista) {
+      const ultimoAvulso = [...confirmados].reverse().find(id => !jogadorMensalista(id));
+      if (ultimoAvulso) {
+        presenca.confirmados = confirmados.filter(id => id !== ultimoAvulso);
+        if (!presenca.espera) presenca.espera = [];
+        presenca.espera.unshift(ultimoAvulso);
+        presenca.confirmados.push(currentUser.id);
+        showToast('Vaga garantida como mensalista ✅');
+      } else {
+        if (espera.length >= 5) { showToast('Lista de espera cheia'); return; }
+        presenca.espera.push(currentUser.id);
+        showToast('Adicionado à lista de espera');
+      }
+    } else {
+      if (espera.length >= 5) { showToast('Lista de espera cheia'); return; }
+      presenca.espera = [...espera, currentUser.id];
+      showToast('Adicionado à lista de espera');
+    }
+  } else {
+    // During priority window: only mensalistas
+    if (dentroPrioridade && !ehMensalista) {
+      showToast('⏳ Lista reservada para mensalistas até Sex 12h');
+      return;
+    }
+    presenca.confirmados = [...confirmados, currentUser.id];
+    // Avulso: register R$25 debt — must pay by saturday 12h
+    if (!ehMensalista) {
+      const sab12h = peladaDate ? new Date(peladaDate - (24*60*60*1000)).setHours(12,0,0,0) : null;
+      const sab12hStr = sab12h ? new Date(sab12h).toLocaleString('pt-BR') : 'Sáb 12h';
+      await adicionarDebito(currentUser.id, 'avulso', 25, `Pelada ${sorteio.data} (pagar até ${sab12hStr})`);
+    }
+    showToast('Presença confirmada! ✅');
+  }
+
+  appData.presenca = presenca;
+  await firestoreSet('config', 'presenca', presenca);
+  saveLocal();
+  renderPresenca();
+}
+
+async function desmarcarPresenca() {
+  if (!currentUser) return;
+  const presenca = appData.presenca;
+  if (!presenca) return;
+
+  const now = Date.now();
+  const peladaDate = parsePeladaDate(presenca.data || appData.ultimoSorteio?.data);
+  const h24 = 24 * 60 * 60 * 1000;
+  const dentro24h = peladaDate && (peladaDate - now) < h24;
+
+  const naEspera = (presenca.espera||[]).includes(currentUser.id);
+
+  if (!naEspera && dentro24h) {
+    const ehMens = jogadorMensalista(currentUser.id);
+    const multaValor = ehMens ? 10 : 25;
+    const msg = ehMens ? 'R$10 (mensalista)' : 'R$25 (avulso)';
+    if (!confirm(`Desmarcar com menos de 24h gera multa de ${msg}. Confirmar?`)) return;
+    await adicionarDebito(currentUser.id, 'multa', multaValor, `Desmarcou com <24h — Pelada ${appData.presenca?.data||''}`);
+  }
+
+  if (naEspera) {
+    presenca.espera = presenca.espera.filter(id => id !== currentUser.id);
+  } else {
+    presenca.confirmados = (presenca.confirmados||[]).filter(id => id !== currentUser.id);
+    // Promote first from espera
+    if ((presenca.espera||[]).length > 0) {
+      const promovido = presenca.espera[0];
+      presenca.espera = presenca.espera.slice(1);
+      presenca.confirmados.push(promovido);
+      // Avulso promovido recebe débito R$25
+      if (!jogadorMensalista(promovido)) {
+        const sorteioData = appData.ultimoSorteio?.data;
+        await adicionarDebito(promovido, 'avulso', 25, `Pelada ${sorteioData} (promovido da espera)`);
+      }
+      showToast('Vaga aberta — próximo da espera foi promovido');
+    }
+    // Remove avulso debt if cancelling with >24h
+    if (!naEspera && !dentro24h && !jogadorMensalista(currentUser.id)) {
+      const fin = getFinancasJogador(currentUser.id);
+      // Remove last avulso debt for this pelada
+      if (fin.debitos) {
+        const sorteioData = appData.ultimoSorteio?.data;
+        const idx = [...fin.debitos].reverse().findIndex(d => d.tipo==='avulso' && d.descricao?.includes(sorteioData));
+        if (idx >= 0) {
+          fin.debitos.splice(fin.debitos.length-1-idx, 1);
+          await firestoreSet('financas', currentUser.id, fin);
+        }
+      }
+    }
+  }
+
+  appData.presenca = presenca;
+  await firestoreSet('config', 'presenca', presenca);
+  saveLocal();
+  renderPresenca();
+  if (!naEspera && !dentro24h) showToast('Presença desmarcada');
 }
 
 // ─── HISTÓRICO DE PELADAS NA HOME ────────────────────────────
@@ -569,12 +1053,66 @@ function openPeladaDetalhe(peladaId) {
       </div>`;
     }).join('');
 
+  // Build reactions HTML for each player
+  const reacoes = p.reacoes || {};
+  const rowsComReacoes = (p.jogadores||[])
+    .filter(j => !j.ausente)
+    .sort((a,b) => b.scoreDia - a.scoreDia)
+    .map((j,i) => {
+      const isMvp = p.mvp?.id === j.id;
+      const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':`#${i+1}`;
+      const minhasReacoes = reacoes[j.id] || {};
+      const emojisBtns = ['🔥','👑','💀','🎯','⚽','😂','👏','💪'].map(em => {
+        const count = Object.values(minhasReacoes).filter(r=>r===em).length;
+        const minha = currentUser && minhasReacoes[currentUser.id] === em;
+        return `<button onclick="reagir('${p.id}','${j.id}','${em}')" style="background:${minha?'rgba(201,168,76,.2)':'rgba(255,255,255,.05)'};border:1px solid ${minha?'var(--border-gold)':'rgba(255,255,255,.08)'};border-radius:99px;padding:3px 8px;cursor:pointer;font-size:12px;display:inline-flex;align-items:center;gap:3px;color:var(--text)">${em}${count>0?`<span style="font-size:10px;color:var(--t2)">${count}</span>`:''}</button>`;
+      }).join('');
+      return `
+      <div class="prow rank-row" style="${isMvp?'border-color:var(--gold);background:rgba(201,168,76,.06)':''}">
+        <div class="rank-row-top">
+          <div class="rank-n ${i===0?'g':i===1?'s':i===2?'b':''}">${medal}</div>
+          <div class="rank-name-col">
+            <div class="p-name">${j.nome}${isMvp?' <span style="background:linear-gradient(135deg,var(--gold),var(--gold-lt));color:#000;font-size:9px;padding:2px 8px;border-radius:99px;font-family:Oswald,sans-serif;letter-spacing:1px;margin-left:5px">MVP ⭐</span>':''}</div>
+          </div>
+        </div>
+        <div class="rank-stats-row">
+          <div class="rank-stat"><div class="rs-v">${j.scoreDia.toFixed(2)}</div><div class="rs-l">Score</div></div>
+          <div class="rank-stat"><div class="rs-v">${j.gols}</div><div class="rs-l">⚽</div></div>
+          <div class="rank-stat"><div class="rs-v">${j.assists}</div><div class="rs-l">🎯</div></div>
+          <div class="rank-stat"><div class="rs-v">${j.vitorias}</div><div class="rs-l">🏆</div></div>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.05)">
+          ${emojisBtns}
+        </div>
+      </div>`;
+    }).join('');
+
   document.getElementById('peladaDetalheTitle').textContent = `PELADA ${p.data}`;
   document.getElementById('peladaDetalheMvp').innerHTML = tempoHTML + podioHTML + votacaoHTML;
-  document.getElementById('peladaDetalheList').innerHTML = `<div class="section-lbl" style="margin-top:4px">ESTATÍSTICAS COMPLETAS</div>` + rows;
+  document.getElementById('peladaDetalheList').innerHTML = `<div class="section-lbl" style="margin-top:4px">ESTATÍSTICAS COMPLETAS</div>` + rowsComReacoes;
   openModal('modalPeladaDetalhe');
 }
 window.openPeladaDetalhe = openPeladaDetalhe;
+
+async function reagir(peladaId, jogadorId, emoji) {
+  if (!currentUser || currentUser.isGuest) { showToast('Faça login para reagir'); return; }
+  const p = (appData.peladasHist||[]).find(x=>x.id===peladaId);
+  if (!p) return;
+  if (!p.reacoes) p.reacoes = {};
+  if (!p.reacoes[jogadorId]) p.reacoes[jogadorId] = {};
+  // Toggle: se já reagiu com esse emoji, remove; senão, troca/adiciona
+  if (p.reacoes[jogadorId][currentUser.id] === emoji) {
+    delete p.reacoes[jogadorId][currentUser.id];
+  } else {
+    p.reacoes[jogadorId][currentUser.id] = emoji;
+  }
+  await firestoreSet('peladasHist', peladaId, p);
+  const idx = (appData.peladasHist||[]).findIndex(x=>x.id===peladaId);
+  if (idx>=0) appData.peladasHist[idx] = p;
+  saveLocal();
+  openPeladaDetalhe(peladaId); // re-render
+}
+window.reagir = reagir;
 // ─── JOGADORES ───────────────────────────────────────────────
 function renderJogs() {
   const list=document.getElementById('jogList');
@@ -613,7 +1151,7 @@ function openCadastro(id=null) {
   document.getElementById('inpNome').value='';
   document.getElementById('inpNota').value='';
   document.getElementById('editId').value=id||'';
-  if(id){const j=appData.jogadores.find(x=>x.id===id);if(j){document.getElementById('inpNome').value=j.nome;document.getElementById('inpNota').value=j.nota?.toFixed(1);}}
+  if(id){const j=appData.jogadores.find(x=>x.id===id);if(j){document.getElementById('inpNome').value=j.nome;document.getElementById('inpNota').value=j.nota?.toFixed(1);const sel=document.getElementById('inpTipo');if(sel)sel.value=j.tipoJogador||'avulso';}}
   openModal('modalCadastro');
 }
 
@@ -625,12 +1163,17 @@ async function salvarJogador() {
   if(!nome){showToast('Digite um nome');return;}
   if(isNaN(notaVal)||notaVal<0||notaVal>10){showToast('Nota deve ser 0–10');return;}
   const nota=+notaVal.toFixed(1);
+  const tipo = document.getElementById('inpTipo')?.value || 'avulso';
   if(editId){
     const j=appData.jogadores.find(x=>x.id===editId);
-    if(j){j.nome=nome;j.nota=nota;await firestoreSet('jogadores',editId,j);}
+    if(j){j.nome=nome;j.nota=nota;j.tipoJogador=tipo;await firestoreSet('jogadores',editId,j);}
   } else {
+    // Check mensalista limit
+    if (tipo==='mensalista' && appData.jogadores.filter(j=>j.tipoJogador==='mensalista').length >= 15) {
+      showToast('Limite de 15 mensalistas atingido'); return;
+    }
     const id='p'+Date.now();
-    const nj={id,nome,nota,domingos:[],criadoEm:Date.now()};
+    const nj={id,nome,nota,tipoJogador:tipo,domingos:[],criadoEm:Date.now()};
     appData.jogadores.push(nj);
     await firestoreSet('jogadores',id,nj);
   }
@@ -1148,10 +1691,24 @@ function confirmarDataSorteio() {
     ausentes:[], statsIdx:0, statsOrder:[], statsData:{}
   };
   appData.restricoes=appData.restricoes.filter(r=>r.duracao!=='domingo');
+  // Clear any previous presença when starting new sorteio
+  if (appData.presenca) {
+    await firestoreDelete('config','presenca');
+    appData.presenca = null;
+  }
   saveLocal(); renderFlow();
   document.getElementById('flow').style.display='block';
 }
 function closeFlow() {
+  if (flow.step === 'times') {
+    // Go back to selection instead of closing
+    flow.step = 'sel';
+    renderFlow();
+    return;
+  }
+  if (flow.step === 'stats' || flow.step === 'ausentes') {
+    if (!confirm('Cancelar inserção de estatísticas? Dados não serão salvos.')) return;
+  }
   document.getElementById('flow').style.display='none';
 }
 function renderFlow() {
@@ -1327,16 +1884,20 @@ async function confirmarTimes(){
       return j?.nome || id;
     }))
   };
+  // Save locally first as fallback
+  appData.ultimoSorteio = timesData;
+  saveLocal();
   try {
     await firestoreSet('config', 'ultimoSorteio', timesData);
-    appData.ultimoSorteio = timesData;
-    saveLocal();
     document.getElementById('flow').style.display='none';
     goTo('home');
     showToast('Times confirmados! ✅ Todos podem ver.');
   } catch(e) {
-    console.error('Erro ao confirmar times:', e);
-    showToast('Erro ao salvar. Tente novamente.');
+    console.error('Firestore error:', e.code, e.message);
+    // Even if Firebase fails, show locally
+    document.getElementById('flow').style.display='none';
+    goTo('home');
+    showToast('⚠️ Salvo localmente. Verifique as regras do Firestore no console.');
   }
 }
 
@@ -1408,9 +1969,11 @@ async function salvarEdicaoTimes() {
 // ─── HOME admin actions (cancelar / concluir) ─────────────────
 async function cancelarPartidaHome() {
   if (!currentUser?.isAdmin) return;
-  if (!confirm('Cancelar partida? Os times serão removidos.')) return;
+  if (!confirm('Cancelar partida? Os times e a lista de presença serão removidos.')) return;
   await firestoreDelete('config', 'ultimoSorteio');
+  await firestoreDelete('config', 'presenca');
   appData.ultimoSorteio = null;
+  appData.presenca = null;
   saveLocal();
   renderHome();
   showToast('Partida cancelada');
@@ -1537,6 +2100,21 @@ async function salvarStats() {
     await finalizarVotacao(peladaId, peladaRec, true);
   }
 
+  // Check no-shows: confirmed but not in statsOrder (absent)
+  const presenca = appData.presenca;
+  if (presenca?.confirmados) {
+    for (const id of presenca.confirmados) {
+      const ausente = flow.ausentes.includes(id);
+      if (ausente) {
+        const multaNoShow = jogadorMensalista(id) ? 10 : 25;
+        await adicionarDebito(id, 'multa', multaNoShow, `Faltou sem desmarcar — Pelada ${data}`);
+      }
+    }
+  }
+  // Clear presença
+  await firestoreDelete('config', 'presenca');
+  appData.presenca = null;
+
   await firestoreDelete('config', 'ultimoSorteio');
   appData.ultimoSorteio = null;
   saveLocal();
@@ -1645,6 +2223,256 @@ async function checkVotacoesExpiradas() {
   }
 }
 
+// ─── FINANCAS SCREEN ─────────────────────────────────────────
+function renderFinancas() {
+  const cont = document.getElementById('sc-financas');
+  if (!cont) return;
+
+  const prazo5du = get5DiasUteis();
+  const hoje = new Date();
+  const atrasado5du = hoje > prazo5du;
+  const prazoStr = prazo5du.toLocaleDateString('pt-BR');
+
+  const jogadores = appData.jogadores;
+  const isAdmin = currentUser?.isAdmin;
+
+  // Build financial status for each player
+  const rows = jogadores.map(j => {
+    const saldo = totalDebitoJogador(j.id);
+    const fin = getFinancasJogador(j.id);
+    const mensalista = jogadorMensalista(j.id);
+    const debitos = (fin.debitos||[]);
+    const multas = debitos.filter(d=>d.tipo==='multa');
+    const mensais = debitos.filter(d=>d.tipo==='mensal');
+    const avulsos = debitos.filter(d=>d.tipo==='avulso');
+    return { j, saldo, fin, mensalista, multas, mensais, avulsos, debitos };
+  }).sort((a,b) => b.saldo - a.saldo); // most indebted first
+
+  const inadimplentes = rows.filter(r => r.saldo > 0);
+  const emDia = rows.filter(r => r.saldo <= 0);
+
+  const semanas = semanasAtraso5du();
+  const avisoAtrasado = semanas > 0 ? `<span style="color:#ef4444"> (+R$${(semanas*5).toFixed(0)}/sem em atraso)</span>` : '';
+  const aviso5du = `<div style="background:rgba(255,68,68,.1);border:1px solid rgba(255,68,68,.3);border-radius:10px;padding:12px 14px;margin-bottom:16px">
+    <div style="font-size:13px;font-weight:700;color:#ef4444">⚠️ MENSALISTAS: Pagamento até ${prazoStr}${semanas>0?' — '+semanas+' sem. em atraso':''}</div>
+    <div style="font-size:11px;color:rgba(255,68,68,.8);margin-top:3px">R$80,00 via Pix: mfnassif16@gmail.com${avisoAtrasado}</div>
+    ${isAdmin ? `<button onclick="gerarMensalidadesMes()" style="margin-top:8px;background:rgba(255,68,68,.15);border:1px solid rgba(255,68,68,.3);border-radius:8px;color:#ef4444;font-family:'Oswald',sans-serif;font-size:12px;letter-spacing:1px;padding:6px 14px;cursor:pointer;width:100%">📋 GERAR MENSALIDADES DO MÊS</button>` : ''}
+  </div>`;
+
+  const renderRow = (r) => {
+    const { j, saldo, fin, mensalista, multas, avulsos, mensais } = r;
+    const cor = saldo > 0 ? '#ef4444' : '#22c55e';
+    const debitosDesc = [
+      ...mensais.map(d=>`Mensalidade ${d.data}: R$${d.valor}`),
+      ...avulsos.map(d=>`Avulso ${d.descricao}: R$${d.valor}`),
+      ...multas.map(d=>`Multa ${d.data}: R$${d.valor} — ${d.descricao}`)
+    ].join('<br>');
+
+    return `
+    <div class="card" style="margin-bottom:8px;${saldo>0?'border-color:rgba(255,68,68,.25)':''}">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:${saldo>0?8:0}px">
+        <div class="p-avatar" style="${j.foto?'padding:0;overflow:hidden':''}">${j.foto?`<img src="${j.foto}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`:j.nome[0].toUpperCase()}</div>
+        <div style="flex:1">
+          <div style="font-weight:500;font-size:13px">${j.nome} ${mensalista?'<span style="font-size:9px;background:var(--gold-dim);border:1px solid var(--border-gold);color:var(--gold);padding:1px 6px;border-radius:4px">MENSAL</span>':'<span style="font-size:9px;background:var(--s3);color:var(--t2);padding:1px 6px;border-radius:4px">AVULSO</span>'}</div>
+          <div style="font-size:11px;color:var(--t2);margin-top:2px">${debitosDesc || 'Sem débitos'}</div>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:15px;font-weight:700;color:${cor}">${saldo>0?'R$'+saldo.toFixed(2):'Em dia ✅'}</div>
+      </div>
+      ${isAdmin ? `
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+        ${saldo > 0 ? `<button class="btn btn-gold" style="flex:1;font-size:12px;padding:8px;min-width:90px" onclick="abrirDarBaixa('${j.id}')">💰 DAR BAIXA</button>` : ''}
+        <button class="btn btn-ghost" style="flex:1;font-size:12px;padding:8px;min-width:90px" onclick="abrirAddDebito('${j.id}')">+ DÉBITO</button>
+        <button class="btn btn-ghost" style="flex:1;font-size:12px;padding:8px;min-width:90px" onclick="abrirEditarDebitos('${j.id}')">✏️ EDITAR</button>
+      </div>` : ''}
+    </div>`;
+  };
+
+  // Render inside the screen
+  const inner = cont.querySelector('#financasInner');
+  if (!inner) return;
+  inner.innerHTML = `
+    ${aviso5du}
+    ${inadimplentes.length > 0 ? `
+      <div class="section-lbl">EM ABERTO (${inadimplentes.length})</div>
+      ${inadimplentes.map(renderRow).join('')}` : ''}
+    ${emDia.length > 0 ? `
+      <div class="section-lbl" style="margin-top:12px">EM DIA (${emDia.length})</div>
+      ${emDia.map(renderRow).join('')}` : ''}
+  `;
+}
+
+function abrirDarBaixa(jogadorId) {
+  const j = appData.jogadores.find(x=>x.id===jogadorId);
+  const saldo = totalDebitoJogador(jogadorId);
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay open';
+  overlay.id = 'modalDarBaixa';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="mhandle"></div>
+      <div class="m-title">DAR BAIXA</div>
+      <div class="m-sub">${j?.nome} · Saldo: R$${saldo.toFixed(2)}</div>
+      <div class="field"><label>Valor pago (R$)</label><input class="input" id="baixaValor" type="number" step="0.01" min="0" placeholder="80.00" value="${saldo}"></div>
+      <div class="field"><label>Descrição</label><input class="input" id="baixaDesc" placeholder="Mensalidade março" value="Pagamento"></div>
+      <button class="btn btn-gold" onclick="executarBaixa('${jogadorId}')">REGISTRAR PAGAMENTO</button>
+      <button class="btn btn-ghost mt8" onclick="document.getElementById('modalDarBaixa').remove()">CANCELAR</button>
+    </div>`;
+  overlay.addEventListener('click', e => { if(e.target===overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+
+async function executarBaixa(jogadorId) {
+  const val = parseFloat(document.getElementById('baixaValor')?.value);
+  const desc = document.getElementById('baixaDesc')?.value?.trim() || 'Pagamento';
+  if (isNaN(val) || val <= 0) { showToast('Valor inválido'); return; }
+  await darBaixa(jogadorId, val, desc);
+  document.getElementById('modalDarBaixa')?.remove();
+  renderFinancas();
+}
+
+function abrirAddDebito(jogadorId) {
+  const j = appData.jogadores.find(x=>x.id===jogadorId);
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay open';
+  overlay.id = 'modalAddDebito';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="mhandle"></div>
+      <div class="m-title">ADICIONAR DÉBITO</div>
+      <div class="m-sub">${j?.nome}</div>
+      <div class="field"><label>Tipo</label>
+        <select class="input" id="debitoTipo">
+          <option value="mensal">Mensalidade (R$80)</option>
+          <option value="avulso">Avulso (R$25)</option>
+          <option value="multa">Multa (R$10)</option>
+          <option value="outro">Outro</option>
+        </select>
+      </div>
+      <div class="field"><label>Valor (R$)</label><input class="input" id="debitoValor" type="number" step="0.01" min="0" placeholder="80.00"></div>
+      <div class="field"><label>Descrição</label><input class="input" id="debitoDesc" placeholder="Mensalidade março"></div>
+      <button class="btn btn-gold" onclick="executarAddDebito('${jogadorId}')">ADICIONAR</button>
+      <button class="btn btn-ghost mt8" onclick="document.getElementById('modalAddDebito').remove()">CANCELAR</button>
+    </div>`;
+  overlay.addEventListener('click', e => { if(e.target===overlay) overlay.remove(); });
+  // Auto-fill valor by tipo
+  overlay.querySelector('#debitoTipo').addEventListener('change', e => {
+    const vals = {mensal:80, avulso:25, multa:10, outro:''};
+    overlay.querySelector('#debitoValor').value = vals[e.target.value] || '';
+  });
+  overlay.querySelector('#debitoValor').value = 80;
+  document.body.appendChild(overlay);
+}
+
+async function executarAddDebito(jogadorId) {
+  const tipo = document.getElementById('debitoTipo')?.value;
+  const val = parseFloat(document.getElementById('debitoValor')?.value);
+  const desc = document.getElementById('debitoDesc')?.value?.trim();
+  if (isNaN(val) || val <= 0) { showToast('Valor inválido'); return; }
+  await adicionarDebito(jogadorId, tipo, val, desc || tipo);
+  document.getElementById('modalAddDebito')?.remove();
+  renderFinancas();
+  showToast('Débito adicionado');
+}
+
+function abrirEditarDebitos(jogadorId) {
+  if (!currentUser?.isAdmin) return;
+  const j = appData.jogadores.find(x=>x.id===jogadorId);
+  const fin = getFinancasJogador(jogadorId);
+  const debitos = fin.debitos || [];
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay open';
+  overlay.id = 'modalEditDebitos';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="mhandle"></div>
+      <div class="m-title">DÉBITOS</div>
+      <div class="m-sub">${j?.nome}</div>
+      <div id="editDebitosLista">
+        ${debitos.length === 0 ? '<div style="color:var(--t3);text-align:center;padding:16px">Nenhum débito</div>' :
+          debitos.map((d,i) => `
+          <div style="background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:6px;display:flex;align-items:center;gap:8px">
+            <div style="flex:1">
+              <div style="font-size:12px;font-weight:500">${d.descricao || d.tipo}</div>
+              <div style="font-size:11px;color:var(--t2)">${d.data} · R$${d.valor}</div>
+            </div>
+            <button onclick="removerDebitoIdx('${jogadorId}',${i})" style="background:rgba(255,68,68,.1);border:1px solid rgba(255,68,68,.2);border-radius:6px;color:var(--red);padding:4px 10px;cursor:pointer;font-size:12px">Remover</button>
+          </div>`).join('')}
+      </div>
+      <div class="section-lbl" style="margin-top:14px;margin-bottom:8px">PAGAMENTOS</div>
+      <div>
+        ${(fin.pagamentos||[]).map((p,i) => `
+          <div style="background:rgba(34,197,94,.05);border:1px solid rgba(34,197,94,.15);border-radius:8px;padding:8px 12px;margin-bottom:6px;display:flex;align-items:center;gap:8px">
+            <div style="flex:1"><div style="font-size:12px">✅ ${p.descricao}</div><div style="font-size:11px;color:var(--t2)">${p.data} · R$${p.valor}</div></div>
+            <button onclick="removerPagamentoIdx('${jogadorId}',${i})" style="background:none;border:none;color:var(--t3);cursor:pointer;font-size:16px">×</button>
+          </div>`).join('') || '<div style="color:var(--t3);font-size:12px">Nenhum pagamento</div>'}
+      </div>
+      <button class="btn btn-ghost mt8" onclick="document.getElementById('modalEditDebitos').remove()">FECHAR</button>
+    </div>`;
+  overlay.addEventListener('click', e => { if(e.target===overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+
+async function removerDebitoIdx(jogadorId, idx) {
+  const fin = getFinancasJogador(jogadorId);
+  if (!fin.debitos || !fin.debitos[idx]) return;
+  fin.debitos.splice(idx, 1);
+  appData.financas[jogadorId] = fin;
+  await firestoreSet('financas', jogadorId, fin);
+  saveLocal();
+  document.getElementById('modalEditDebitos')?.remove();
+  abrirEditarDebitos(jogadorId);
+  renderFinancas();
+}
+
+async function removerPagamentoIdx(jogadorId, idx) {
+  const fin = getFinancasJogador(jogadorId);
+  if (!fin.pagamentos || !fin.pagamentos[idx]) return;
+  fin.pagamentos.splice(idx, 1);
+  appData.financas[jogadorId] = fin;
+  await firestoreSet('financas', jogadorId, fin);
+  saveLocal();
+  document.getElementById('modalEditDebitos')?.remove();
+  abrirEditarDebitos(jogadorId);
+  renderFinancas();
+}
+
+// ─── GERAR MENSALIDADES (admin) ──────────────────────────────
+async function gerarMensalidadesMes() {
+  if (!currentUser?.isAdmin) return;
+  const mes = new Date().toLocaleString('pt-BR',{month:'long',year:'numeric'});
+  if (!confirm(`Gerar débito de mensalidade (R$80) para todos os mensalistas — ${mes}?`)) return;
+  const mensalistas = appData.jogadores.filter(j => j.tipoJogador === 'mensalista');
+  let count = 0;
+  for (const j of mensalistas) {
+    // Check if already has this month's mensal
+    const fin = getFinancasJogador(j.id);
+    const jaTemEsseMes = (fin.debitos||[]).some(d => d.tipo==='mensal' && d.descricao?.includes(mes));
+    if (!jaTemEsseMes) {
+      await adicionarDebito(j.id, 'mensal', 80, `Mensalidade ${mes}`);
+      count++;
+    }
+  }
+  renderFinancas();
+  showToast(`Mensalidades geradas: ${count} jogadores`);
+}
+window.gerarMensalidadesMes = gerarMensalidadesMes;
+
+// ─── TIPO JOGADOR (mensalista/avulso) — managed by admin ─────
+async function setTipoJogador(jogadorId, tipo) {
+  if (!currentUser?.isAdmin) return;
+  const mensalistas = appData.jogadores.filter(j => j.tipoJogador === 'mensalista');
+  if (tipo === 'mensalista' && mensalistas.length >= 15) {
+    showToast('Limite de 15 mensalistas atingido'); return;
+  }
+  const j = appData.jogadores.find(x => x.id === jogadorId);
+  if (!j) return;
+  j.tipoJogador = tipo;
+  await firestoreSet('jogadores', jogadorId, j);
+  saveLocal();
+  renderFinancas();
+  showToast(`${j.nome} → ${tipo}`);
+}
+
 // ─── EXPORT ──────────────────────────────────────────────────
 function exportarExcel() {
   const idxMap=Object.fromEntries(calcIdx(appData.jogadores).map(i=>[i.id,i]));
@@ -1740,6 +2568,19 @@ window.setRankDir=setRankDir;
 window.confirmarDataSorteio=confirmarDataSorteio;
 window.votarMvp=votarMvp;
 window.checkVotacoesExpiradas=checkVotacoesExpiradas;
+window.confirmarPresenca=confirmarPresenca;
+window.desmarcarPresenca=desmarcarPresenca;
+window.abrirDarBaixa=abrirDarBaixa;
+window.executarBaixa=executarBaixa;
+window.abrirAddDebito=abrirAddDebito;
+window.executarAddDebito=executarAddDebito;
+window.setTipoJogador=setTipoJogador;
+window.abrirNovoComunicado=abrirNovoComunicado;
+window.salvarComunicado=salvarComunicado;
+window.removerComunicado=removerComunicado;
+window.abrirEditarDebitos=abrirEditarDebitos;
+window.removerDebitoIdx=removerDebitoIdx;
+window.removerPagamentoIdx=removerPagamentoIdx;
 window.abrirEdicaoTimes=abrirEdicaoTimes;
 window.moverJogador=moverJogador;
 window.salvarEdicaoTimes=salvarEdicaoTimes;
