@@ -1766,11 +1766,74 @@ async function removerDomingo(jogadorId, idx) {
   if (!currentUser?.isAdmin) return;
   const j = appData.jogadores.find(x => x.id === jogadorId); if (!j) return;
   const d = j.domingos[idx];
-  if (!confirm(`Remover domingo ${d?.data}?`)) return;
-  j.domingos.splice(idx, 1);
-  await firestoreSet('jogadores', jogadorId, j);
+  if (!d) return;
+
+  const ocorrenciasJogador = j.domingos.filter(x => x.data === d.data).length;
+  const totalTodos = appData.jogadores.reduce((s, jj) =>
+    s + (jj.domingos||[]).filter(x => x.data === d.data).length, 0);
+
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay open';
+  overlay.id = 'modalRemoverDomingo';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="mhandle"></div>
+      <div class="m-title">REMOVER DOMINGO</div>
+      <div class="m-sub">${d.data}</div>
+
+      <div style="background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;font-size:12px;color:var(--t2);margin-bottom:16px;line-height:1.8">
+        <div>Jogador: <strong style="color:var(--text)">${j.nome}</strong> — ${ocorrenciasJogador} registro${ocorrenciasJogador!==1?'s':''} nesta data</div>
+        <div>Total geral: <strong style="color:var(--text)">${totalTodos} registro${totalTodos!==1?'s':''}</strong> desta data em todos os jogadores</div>
+      </div>
+
+      <button class="btn btn-danger" onclick="executarRemoverDomingo('${jogadorId}',${idx},'unico')">
+        🗑️ REMOVER SÓ ESTE REGISTRO (${j.nome})
+      </button>
+      ${ocorrenciasJogador > 1 ? `
+      <button class="btn btn-danger mt8" onclick="executarRemoverDomingo('${jogadorId}',${idx},'jogador')">
+        🗑️ REMOVER TODOS DE ${j.nome} NESTA DATA (${ocorrenciasJogador})
+      </button>` : ''}
+      <button class="btn btn-danger mt8" style="background:rgba(255,68,68,.2)" onclick="executarRemoverDomingo('${jogadorId}',${idx},'todos')">
+        ⚠️ REMOVER TODOS OS JOGADORES DESTA DATA (${totalTodos})
+      </button>
+      <button class="btn btn-ghost mt8" onclick="document.getElementById('modalRemoverDomingo').remove()">CANCELAR</button>
+    </div>`;
+  overlay.addEventListener('click', e => { if(e.target===overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+
+async function executarRemoverDomingo(jogadorId, idx, modo) {
+  const j = appData.jogadores.find(x => x.id === jogadorId); if (!j) return;
+  const d = j.domingos[idx]; if (!d) return;
+  const data = d.data;
+  document.getElementById('modalRemoverDomingo')?.remove();
+
+  if (modo === 'unico') {
+    // Remove only this specific entry (by index)
+    j.domingos.splice(idx, 1);
+    await firestoreSet('jogadores', jogadorId, j);
+    showToast('Registro removido');
+
+  } else if (modo === 'jogador') {
+    // Remove all entries of this date for this player
+    j.domingos = j.domingos.filter(x => x.data !== data);
+    await firestoreSet('jogadores', jogadorId, j);
+    showToast(`Todos os registros de ${data} removidos de ${j.nome}`);
+
+  } else if (modo === 'todos') {
+    // Remove this date from ALL players
+    if (!confirm(`Remover a data ${data} de TODOS os jogadores?`)) { openPerfil(jogadorId); return; }
+    for (const jj of appData.jogadores) {
+      const antes = jj.domingos?.length || 0;
+      jj.domingos = (jj.domingos||[]).filter(x => x.data !== data);
+      if (jj.domingos.length !== antes) {
+        await firestoreSet('jogadores', jj.id, jj);
+      }
+    }
+    showToast(`Data ${data} removida de todos os jogadores`);
+  }
+
   saveLocal();
-  showToast('Domingo removido');
   openPerfil(jogadorId);
 }
 
@@ -2925,6 +2988,8 @@ window.abrirNovoDomingo=abrirNovoDomingo;
 window.abrirEditDomingo=abrirEditDomingo;
 window.salvarEditDomingo=salvarEditDomingo;
 window.removerDomingo=removerDomingo;
+window.executarRemoverDomingo=executarRemoverDomingo;
+window.executarRemoverDomingo=executarRemoverDomingo;
 window.openModal=openModal;
 window.closeModal=closeModal;
 window.updateAlea=updateAlea;
