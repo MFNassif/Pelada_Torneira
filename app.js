@@ -736,7 +736,7 @@ function renderHome() {
 
     const timesHTML = sorteioTimesArr.map((t, ti) => `
       <div class="team-card ${T_COLORS[ti]}" style="margin-bottom:8px">
-        <div class="t-name"><div class="t-dot"></div>Time ${ti+1}</div>
+        <div class="t-name"><div class="t-dot"></div>${['Time Vermelho','Time Azul','Time Branco','Time Preto'][ti]||'Time '+(ti+1)}</div>
         ${t.map(id => {
           const j = appData.jogadores.find(x=>x.id===id);
           return `<div class="t-player"><span>${j?.nome||id}</span></div>`;
@@ -2261,7 +2261,7 @@ function openPerfil(id) {
   document.getElementById('perfilBody').innerHTML=`
     <div style="text-align:center;margin-bottom:14px">
       ${fotoHTML}
-      ${canEditPhoto ? `<button onclick="abrirUploadFoto('${j.id}')" style="background:var(--s2);border:1px solid var(--border-gold);border-radius:99px;color:var(--gold);font-size:11px;padding:5px 14px;cursor:pointer;font-family:'DM Sans',sans-serif">📷 ${j.foto ? 'Trocar foto' : 'Adicionar foto'}</button>` : ''}
+      ${canEditPhoto ? `<label for="fotoInputGlobal" onclick="_fotoUploadTarget='${j.id}'" style="display:inline-block;background:var(--s2);border:1px solid var(--border-gold);border-radius:99px;color:var(--gold);font-size:11px;padding:5px 14px;cursor:pointer;font-family:'DM Sans',sans-serif">📷 ${j.foto ? 'Trocar foto' : 'Adicionar foto'}</label>` : ''}
     </div>
     <div class="m-title" style="text-align:center">${j.nome}</div>
     <div class="m-sub" style="text-align:center">Nota opinativa: ${j.nota?.toFixed(1)}</div>
@@ -2317,7 +2317,7 @@ function openPerfilProprio() {
     </div>
     <button onclick="document.getElementById('userFloatMenu')?.remove();openPerfil('${currentUser.id}')" style="width:100%;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 10px;text-align:left;cursor:pointer;border-radius:8px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background='var(--s2)'" onmouseout="this.style.background='none'">👤 Ver perfil</button>
     ${!currentUser.isGuest ? `
-    <button onclick="document.getElementById('userFloatMenu')?.remove();abrirUploadFoto('${currentUser.id}')" style="width:100%;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 10px;text-align:left;cursor:pointer;border-radius:8px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background='var(--s2)'" onmouseout="this.style.background='none'">📷 Alterar foto</button>
+    <label for="fotoInputGlobal" onclick="document.getElementById('userFloatMenu')?.remove();_fotoUploadTarget='${currentUser.id}'" style="width:100%;display:flex;align-items:center;gap:8px;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 10px;text-align:left;cursor:pointer;border-radius:8px;box-sizing:border-box">📷 Alterar foto</label>
     <button onclick="document.getElementById('userFloatMenu')?.remove();abrirMudarSenha()" style="width:100%;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 10px;text-align:left;cursor:pointer;border-radius:8px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background='var(--s2)'" onmouseout="this.style.background='none'">🔑 Mudar senha</button>` : ''}
     <div style="border-top:1px solid var(--border);margin:6px 0"></div>
     <button onclick="document.getElementById('userFloatMenu')?.remove();sairDaConta()" style="width:100%;background:none;border:none;color:var(--red);font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 10px;text-align:left;cursor:pointer;border-radius:8px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background='rgba(255,68,68,.08)'" onmouseout="this.style.background='none'">🚪 Sair da conta</button>
@@ -2775,7 +2775,7 @@ let flow = {
   statsOrder: [],
   statsData: {}
 };
-const T_NAMES=['Time 1','Time 2','Time 3','Time 4'];
+const T_NAMES=['Time Vermelho','Time Azul','Time Branco','Time Preto'];
 const T_COLORS=['t0','t1','t2','t3'];
 
 function startFlow() {
@@ -3147,10 +3147,10 @@ function renderEdicaoTimes() {
   const cont = document.getElementById('editTimesContent');
   if (!cont) return;
   const nT = editTimesState.length;
-  const dotColors = ['#22c55e','#eab308','#3b82f6','#ef4444'];
+  const dotColors = ['#ef4444','#3b82f6','#f0f0f0','#1a1a1a'];
   cont.innerHTML = editTimesState.map((tm, ti) => `
     <div class="card" style="margin-bottom:10px;border-color:var(--border-gold)">
-      <div class="t-name" style="font-size:13px;margin-bottom:8px"><div style="width:8px;height:8px;border-radius:50%;background:${dotColors[ti]};flex-shrink:0;display:inline-block;margin-right:6px"></div>Time ${ti+1}</div>
+      <div class="t-name" style="font-size:13px;margin-bottom:8px"><div style="width:8px;height:8px;border-radius:50%;background:${dotColors[ti]};flex-shrink:0;display:inline-block;margin-right:6px"></div>${['Time Vermelho','Time Azul','Time Branco','Time Preto'][ti]||'Time '+(ti+1)}</div>
       ${tm.map((id, pi) => {
         const j = appData.jogadores.find(x=>x.id===id);
         const opts = timesToArr(appData.ultimoSorteio.times, appData.ultimoSorteio.timesCount).flat().map(pid => {

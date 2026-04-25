@@ -43,10 +43,10 @@
   --acc-dim: var(--gold-dim);
 
   /* Teams */
-  --t-verde:    #22c55e;
-  --t-amarelo:  #eab308;
-  --t-azul:     #3b82f6;
   --t-vermelho: #ef4444;
+  --t-azul:     #3b82f6;
+  --t-branco:   #e8e8e8;
+  --t-preto:    #2a2a2a;
 
   --r: 14px;
   --rr: 10px;
@@ -331,10 +331,10 @@ select.input { cursor: pointer; }
 
 /* ── TEAM CARDS ────────────────────────────────────── */
 .team-card { border-radius: var(--r); padding: 14px; margin-bottom: 10px; border: 1px solid; }
-.team-card.t0 { background: rgba(34,197,94,.04); border-color: rgba(34,197,94,.25); }
-.team-card.t1 { background: rgba(234,179,8,.04); border-color: rgba(234,179,8,.25); }
-.team-card.t2 { background: rgba(59,130,246,.04); border-color: rgba(59,130,246,.25); }
-.team-card.t3 { background: rgba(239,68,68,.04); border-color: rgba(239,68,68,.25); }
+.team-card.t0 { background: rgba(239,68,68,.06);  border-color: rgba(239,68,68,.35); }
+.team-card.t1 { background: rgba(59,130,246,.06); border-color: rgba(59,130,246,.35); }
+.team-card.t2 { background: rgba(232,232,232,.05);border-color: rgba(232,232,232,.3); }
+.team-card.t3 { background: rgba(42,42,42,.5);    border-color: rgba(120,120,120,.4); }
 
 .t-name {
   font-family: 'Oswald', sans-serif;
@@ -343,14 +343,14 @@ select.input { cursor: pointer; }
   display: flex; align-items: center; gap: 8px;
 }
 .t-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.team-card.t0 .t-dot { background: var(--t-verde); }
-.team-card.t1 .t-dot { background: var(--t-amarelo); }
-.team-card.t2 .t-dot { background: var(--t-azul); }
-.team-card.t3 .t-dot { background: var(--t-vermelho); }
-.team-card.t0 .t-name { color: var(--t-verde); }
-.team-card.t1 .t-name { color: var(--t-amarelo); }
-.team-card.t2 .t-name { color: var(--t-azul); }
-.team-card.t3 .t-name { color: var(--t-vermelho); }
+.team-card.t0 .t-dot { background: var(--t-vermelho); }
+.team-card.t1 .t-dot { background: var(--t-azul); }
+.team-card.t2 .t-dot { background: var(--t-branco); }
+.team-card.t3 .t-dot { background: var(--t-branco); border: 1px solid rgba(120,120,120,.5); }
+.team-card.t0 .t-name { color: var(--t-vermelho); }
+.team-card.t1 .t-name { color: var(--t-azul); }
+.team-card.t2 .t-name { color: var(--t-branco); }
+.team-card.t3 .t-name { color: #a0a0a0; }
 
 .t-player {
   font-size: 13px; padding: 5px 0;
