@@ -385,16 +385,26 @@ function openPerfilProprio() { if(currentUser) openPerfil(currentUser.id); }
 
 // ─── OPCOES ──────────────────────────────────────────────────
 function renderOpcoes() {
-  document.getElementById('sliderAlea').value=appData.config?.aleatoriedade??15;
-  updateAlea();
+  const v = appData.config?.aleatoriedade??15;
+  document.getElementById('sliderAlea').value=v;
+  document.getElementById('aleaVal').textContent=v+'%';
+  // Slider só visível para admins
+  document.getElementById('sliderAlea').disabled = !currentUser?.isAdmin;
+  document.getElementById('sliderAlea').style.opacity = currentUser?.isAdmin ? '1' : '0.3';
+  document.getElementById('sliderAlea').style.pointerEvents = currentUser?.isAdmin ? 'auto' : 'none';
   renderRestList();
 }
 function updateAlea() {
+  if(!currentUser?.isAdmin){ 
+    // reset slider to current value
+    document.getElementById('sliderAlea').value=appData.config?.aleatoriedade??15;
+    showToast('Sem permissão'); return; 
+  }
   const v=document.getElementById('sliderAlea').value;
   document.getElementById('aleaVal').textContent=v+'%';
   if(!appData.config) appData.config={};
   appData.config.aleatoriedade=parseInt(v);
-  if(useFirebase&&db_fire&&currentUser?.isAdmin) firestoreSet('config','main',appData.config).catch(()=>{});
+  if(useFirebase&&db_fire) firestoreSet('config','main',appData.config).catch(()=>{});
   saveLocal();
 }
 function renderRestList() {
