@@ -582,6 +582,19 @@ hr.div { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 }
 .rs-l { font-size: 9px; color: var(--t2); margin-top: 2px; letter-spacing: .5px; }
 
+
+/* ── PELADA HIST CARD ──────────────────────────────────────── */
+.pelada-hist-card {
+  background: var(--s1);
+  border: 1px solid var(--border-gold);
+  border-radius: var(--r);
+  padding: 14px 16px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.pelada-hist-card:active { background: var(--gold-dim); }
+
 </style>
 </head>
 <body>
@@ -666,6 +679,7 @@ hr.div { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
       </button>
 
       <div id="homeAdminControls"></div>
+      <div id="homePeladasHist"></div>
 
     </div>
 
@@ -692,12 +706,13 @@ hr.div { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
       <div class="rank-filter-bar">
         <div class="rank-filter-row">
           <span class="rank-filter-label">Stat</span>
-          <span class="rank-chip sel" data-v="IF"       onclick="setRankStat('IF')">Índice</span>
+          <span class="rank-chip sel" data-v="IF"       onclick="setRankStat('IF')">Rating</span>
           <span class="rank-chip"     data-v="nota"     onclick="setRankStat('nota')">Nota</span>
           <span class="rank-chip"     data-v="gols"     onclick="setRankStat('gols')">⚽ Gols</span>
           <span class="rank-chip"     data-v="assists"  onclick="setRankStat('assists')">🎯 Assists</span>
           <span class="rank-chip"     data-v="vitorias" onclick="setRankStat('vitorias')">🏆 Vit.</span>
           <span class="rank-chip"     data-v="domingos" onclick="setRankStat('domingos')">Dom.</span>
+          <span class="rank-chip"     data-v="mvps"     onclick="setRankStat('mvps')">⭐ MVP</span>
         </div>
         <div class="rank-filter-row">
           <span class="rank-filter-label">Ordem</span>
@@ -829,6 +844,53 @@ hr.div { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
     <div class="m-sub">Quem pode inserir dados na pelada</div>
     <div id="adminList"></div>
     <button class="btn btn-ghost mt8" onclick="closeModal('modalAdmin')">FECHAR</button>
+  </div>
+</div>
+
+
+<div class="overlay" id="modalEditDomingo">
+  <div class="modal">
+    <div class="m-handle"></div>
+    <div class="m-title" id="editDomingoTitle">EDITAR DOMINGO</div>
+    <div class="m-sub">Ajuste as estatísticas deste domingo</div>
+    <div class="field"><label>Data (dd/mm/aaaa)</label><input class="input" id="editDomingoData" placeholder="25/04/2026"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px">
+      <div class="field" style="margin:0"><label>⚽ Gols</label><input class="input" id="editDomingoGols" type="number" min="0" value="0"></div>
+      <div class="field" style="margin:0"><label>🎯 Assists</label><input class="input" id="editDomingoAssists" type="number" min="0" value="0"></div>
+      <div class="field" style="margin:0"><label>🏆 Vitórias</label><input class="input" id="editDomingoVitorias" type="number" min="0" value="0"></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:16px">
+      <input type="checkbox" id="editDomingoAusente" style="width:18px;height:18px;accent-color:var(--gold);cursor:pointer">
+      <label for="editDomingoAusente" style="font-size:13px;cursor:pointer">Marcar como falta (conta o domingo, sem stats)</label>
+    </div>
+    <button class="btn btn-gold" onclick="salvarEditDomingo()">SALVAR</button>
+    <button class="btn btn-ghost mt8" onclick="closeModal('modalEditDomingo')">CANCELAR</button>
+  </div>
+</div>
+
+
+<div class="overlay" id="modalDataSorteio">
+  <div class="modal">
+    <div class="m-handle"></div>
+    <div class="m-title">DATA DA PELADA</div>
+    <div class="m-sub">Informe a data deste domingo</div>
+    <div class="field">
+      <label>Data (dd/mm/aaaa)</label>
+      <input class="input" id="inputDataSorteio" placeholder="25/05/2025" maxlength="10" onkeydown="if(event.key==='Enter')confirmarDataSorteio()">
+    </div>
+    <button class="btn btn-gold" onclick="confirmarDataSorteio()">SORTEAR ⚽</button>
+    <button class="btn btn-ghost mt8" onclick="closeModal('modalDataSorteio')">CANCELAR</button>
+  </div>
+</div>
+
+<div class="overlay" id="modalPeladaDetalhe">
+  <div class="modal">
+    <div class="m-handle"></div>
+    <div class="m-title" id="peladaDetalheTitle">PELADA</div>
+    <div id="peladaDetalheMvp"></div>
+    <div class="section-lbl">ESTATÍSTICAS DO DIA</div>
+    <div id="peladaDetalheList"></div>
+    <button class="btn btn-ghost mt8" onclick="closeModal('modalPeladaDetalhe')">FECHAR</button>
   </div>
 </div>
 
