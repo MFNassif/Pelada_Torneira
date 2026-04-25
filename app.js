@@ -205,8 +205,23 @@ async function confirmarSenha(jogadorId, modo) {
     let ok = hash === j.senha;
     if (!ok) { try { ok = btoa(unescape(encodeURIComponent(senha))) === j.senha; } catch(e) {} }
     if (!ok) {
-      showToast('Senha incorreta ❌');
-      inp.value = ''; inp.focus(); return;
+      // Show inline error below the input
+      let errMsg = document.getElementById('senhaErroMsg');
+      if (!errMsg) {
+        errMsg = document.createElement('div');
+        errMsg.id = 'senhaErroMsg';
+        errMsg.style.cssText = 'color:#ef4444;font-size:12px;margin-top:6px;text-align:center';
+        inp.parentElement?.appendChild(errMsg);
+      }
+      errMsg.textContent = '❌ Senha incorreta. Tente novamente.';
+      inp.value = '';
+      inp.style.borderColor = '#ef4444';
+      inp.focus();
+      setTimeout(() => {
+        errMsg?.remove();
+        inp.style.borderColor = '';
+      }, 3000);
+      return;
     }
     // Migrate to new hash
     if (j.senha !== hash) { j.senha = hash; await firestoreSet('jogadores', jogadorId, j); saveLocal(); }
@@ -370,6 +385,17 @@ function calcIdx(jogs) {
 }
 
 // ─── FINANÇAS HELPERS ────────────────────────────────────────
+// ─── VALORES CONFIGURÁVEIS ───────────────────────────────────
+function getValores() {
+  const cfg = appData.config || {};
+  return {
+    mensal:  +(cfg.valorMensal  ?? 80),
+    avulso:  +(cfg.valorAvulso  ?? 25),
+    multa:   +(cfg.valorMulta   ?? 10),
+    multaSem:+(cfg.valorMultaSem?? 5),   // multa por semana de atraso mensalidade
+  };
+}
+
 function getFinancasJogador(jogadorId) {
   return appData.financas?.[jogadorId] || { debitos: [], pagamentos: [] };
 }
@@ -406,7 +432,7 @@ function totalDebitoJogador(jogadorId) {
         .filter(p => p.descricao?.toLowerCase().includes('mensalidade'))
         .reduce((s,p) => s + (p.valor||0), 0);
       if (saldoMensais > pagoMensais) {
-        saldo += semanas * 5; // R$5/week auto-applied
+        saldo += semanas * getValores().multaSem; // R$x/week auto-applied
       }
     }
   }
@@ -836,6 +862,13 @@ function renderPresenca() {
     cont.innerHTML = ''; return; // times visíveis na home, oculta lista
   }
 
+  // Show lista if presença exists (even without sorteio)
+  const presencaExiste = appData.presenca && (
+    (appData.presenca.confirmados||[]).length > 0 ||
+    (appData.presenca.espera||[]).length > 0 ||
+    appData.presenca.aberta === true
+  );
+
   const peladas = appData.peladasHist || [];
   const ultimaPelada = peladas.length > 0
     ? [...peladas].sort((a,b)=>(b.savedAt||0)-(a.savedAt||0))[0]
@@ -855,9 +888,10 @@ function renderPresenca() {
   }
 
   // ── LISTA ABERTA ──────────────────────────────────────────
-  // presença.data pode vir da própria presença ou do sorteio
   const presenca = appData.presenca || { confirmados: [], espera: [], data: '' };
   const dataLista = presenca.data || sorteio?.data || '';
+  // If no presença at all and no sorteio, hide
+  if (!presencaExiste && !sorteio) { cont.innerHTML = ''; return; }
   const confirmados = presenca.confirmados || [];
   const espera = presenca.espera || [];
   const total = confirmados.length;
@@ -1004,7 +1038,7 @@ async function checkAvulsosInadimplentes() {
         presenca.espera = presenca.espera.slice(1);
         presenca.confirmados.push(promovido);
         if (!jogadorMensalista(promovido)) {
-          await adicionarDebito(promovido, 'avulso', 25, `Pelada ${sorteio.data} (promovido)`);
+          await adicionarDebito(promovido, 'avulso', getValores().avulso, `Pelada ${sorteio.data} (promovido)`);
         }
       }
     }
@@ -1014,9 +1048,24 @@ async function checkAvulsosInadimplentes() {
   }
 }
 
+async function abrirListaPresenca() {
+  // Admin opens/creates a new presença for the next Sunday
+  if (!currentUser?.isAdmin) return;
+  const proximoDomingo = getProximoDomingo();
+  const novaPresenca = appData.presenca || { confirmados:[], espera:[], data: proximoDomingo, aberta: true };
+  if (!novaPresenca.aberta) novaPresenca.aberta = true;
+  if (!novaPresenca.data) novaPresenca.data = proximoDomingo;
+  appData.presenca = novaPresenca;
+  await firestoreSet('config', 'presenca', novaPresenca);
+  saveLocal();
+  renderPresenca();
+  showToast('Lista de presença aberta ✅');
+}
+window.abrirListaPresenca = abrirListaPresenca;
+
 function abrirAdminPresenca() {
   if (!currentUser?.isAdmin) return;
-  const presenca = appData.presenca || { confirmados:[], espera:[], data: appData.ultimoSorteio?.data };
+  const presenca = appData.presenca || { confirmados:[], espera:[], data: appData.ultimoSorteio?.data || getProximoDomingo() };
   const sorteio = appData.ultimoSorteio;
 
   // Build list of all players not yet confirmed
@@ -1062,9 +1111,23 @@ function abrirAdminPresenca() {
         const j = appData.jogadores.find(x=>x.id===id);
         const nome = j?.nome || id;
         const cadastrado = !!j;
-        return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
-          <span style="color:var(--t2);font-size:12px;min-width:20px">${i+1}.</span>
-          <span style="flex:1;font-size:13px;color:${cadastrado?'var(--text)':'#ef4444'}">${nome}${!cadastrado?' ⚠️ Não cadastrado':''}</span>
+        const ehAvulso = j && !jogadorMensalista(id);
+        const saldoAvulso = ehAvulso ? (() => {
+          const fin = getFinancasJogador(id);
+          const sorteioData = appData.ultimoSorteio?.data || presenca.data || '';
+          const debAvulso = (fin.debitos||[]).filter(d =>
+            d.tipo==='avulso' && d.descricao?.includes(sorteioData)
+          ).reduce((s,d)=>s+(d.valor||0),0);
+          const pagAvulso = (fin.pagamentos||[]).reduce((s,p)=>s+(p.valor||0),0);
+          return Math.max(0, debAvulso - pagAvulso);
+        })() : 0;
+        return `<div style="display:flex;align-items:center;gap:6px;padding:7px 0;border-bottom:1px solid var(--border)">
+          <span style="color:var(--t2);font-size:11px;min-width:18px">${i+1}.</span>
+          <div style="flex:1">
+            <div style="font-size:13px;color:${cadastrado?'var(--text)':'#ef4444'}">${nome}${!cadastrado?' ⚠️':''}</div>
+            ${ehAvulso ? `<div style="font-size:10px;color:${saldoAvulso>0?'#ef4444':'#22c55e'}">${saldoAvulso>0?`Deve R$${saldoAvulso.toFixed(2)}`:'✅ Pago'}</div>` : '<div style="font-size:10px;color:var(--gold)">Mensalista</div>'}
+          </div>
+          ${ehAvulso && saldoAvulso > 0 ? `<button onclick="adminBaixaAvulsoPresenca('${id}')" style="background:rgba(201,168,76,.15);border:1px solid var(--border-gold);border-radius:6px;color:var(--gold);font-size:10px;padding:3px 8px;cursor:pointer">💰 Pago</button>` : ''}
           <button onclick="adminRemoverPresenca('confirmados','${id}')" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:16px;padding:0 4px">×</button>
         </div>`;
       }).join('')||'<div style="color:var(--t3);font-size:12px">Nenhum</div>'}
@@ -1097,12 +1160,41 @@ async function adminAdicionarPresenca(lista) {
   presenca[lista].push(sel);
   appData.presenca = presenca;
   await firestoreSet('config', 'presenca', presenca);
+  // Se avulso adicionado aos confirmados → gera débito R$25 automaticamente
+  if (lista === 'confirmados' && !jogadorMensalista(sel)) {
+    const sorteioData = appData.ultimoSorteio?.data || presenca.data || '';
+    const peladaDate = parsePeladaDate(sorteioData);
+    const sab12h = peladaDate ? new Date(peladaDate - 24*60*60*1000).setHours(12,0,0,0) : null;
+    const sab12hStr = sab12h ? new Date(sab12h).toLocaleString('pt-BR') : 'Sáb 12h';
+    await adicionarDebito(sel, 'avulso', getValores().avulso,
+      `Pelada ${sorteioData} (pagar até ${sab12hStr})`);
+  }
   saveLocal();
   document.getElementById('modalAdminPresenca')?.remove();
   abrirAdminPresenca();
   renderPresenca();
   showToast('Jogador adicionado ✅');
 }
+
+async function adminBaixaAvulsoPresenca(jogadorId) {
+  const j = appData.jogadores.find(x=>x.id===jogadorId);
+  if (!j) return;
+  const sorteioData = appData.ultimoSorteio?.data || appData.presenca?.data || '';
+  const fin = getFinancasJogador(jogadorId);
+  // Find the avulso debt for this pelada
+  const debito = (fin.debitos||[]).find(d =>
+    d.tipo==='avulso' && d.descricao?.includes(sorteioData)
+  );
+  if (!debito) { showToast('Débito não encontrado'); return; }
+  const valor = debito.valor;
+  const dataHoje = new Date().toLocaleDateString('pt-BR');
+  await darBaixaComData(jogadorId, valor, `Baixa avulso — Pelada ${sorteioData}`, dataHoje);
+  showToast(`✅ Baixa de R$${valor} registrada para ${j.nome}`);
+  document.getElementById('modalAdminPresenca')?.remove();
+  abrirAdminPresenca();
+  renderPresenca();
+}
+window.adminBaixaAvulsoPresenca = adminBaixaAvulsoPresenca;
 
 async function adminRemoverPresenca(lista, jogadorId) {
   const presenca = appData.presenca;
@@ -1169,11 +1261,11 @@ async function confirmarPresenca() {
   }
 
   const sorteio = appData.ultimoSorteio;
-  if (!sorteio) { showToast('Nenhum sorteio confirmado'); return; }
-
-  const presenca = appData.presenca || { confirmados: [], espera: [], data: sorteio.data };
-  const confirmados = presenca.confirmados || [];
-  const espera = presenca.espera || [];
+  const presenca = appData.presenca;
+  if (!presenca && !sorteio) { showToast('Lista de presença não disponível'); return; }
+  const presencaObj = presenca || { confirmados: [], espera: [], data: sorteio?.data || '' };
+  const confirmados = presencaObj.confirmados || [];
+  const espera = presencaObj.espera || [];
 
   if (confirmados.includes(currentUser.id) || espera.includes(currentUser.id)) {
     showToast('Você já está na lista'); return;
@@ -1202,14 +1294,14 @@ async function confirmarPresenca() {
       // Mensalista pode deslocar último avulso
       const ultimoAvulso = [...confirmados].reverse().find(id => !jogadorMensalista(id));
       if (ultimoAvulso) {
-        presenca.confirmados = confirmados.filter(id => id !== ultimoAvulso);
-        if (!presenca.espera) presenca.espera = [];
-        presenca.espera.unshift(ultimoAvulso);
-        presenca.confirmados.push(currentUser.id);
+        presencaObj.confirmados = confirmados.filter(id => id !== ultimoAvulso);
+        if (!presencaObj.espera) presencaObj.espera = [];
+        presencaObj.espera.unshift(ultimoAvulso);
+        presencaObj.confirmados.push(currentUser.id);
         showToast('Vaga garantida como mensalista ✅');
       } else {
         if (espera.length >= 5) { showToast('Lista de espera cheia'); return; }
-        presenca.espera = [...espera, currentUser.id];
+        presencaObj.espera = [...espera, currentUser.id];
         showToast('Adicionado à lista de espera');
       }
     } else {
@@ -1218,17 +1310,17 @@ async function confirmarPresenca() {
       showToast('Adicionado à lista de espera');
     }
   } else {
-    presenca.confirmados = [...confirmados, currentUser.id];
+    presencaObj.confirmados = [...confirmados, currentUser.id];
     if (!ehMensalista) {
       const sab12h = peladaDate ? new Date(peladaDate - h24).setHours(12,0,0,0) : null;
       const sab12hStr = sab12h ? new Date(sab12h).toLocaleString('pt-BR') : 'Sáb 12h';
-      await adicionarDebito(currentUser.id, 'avulso', 25, `Pelada ${sorteio.data} (pagar até ${sab12hStr})`);
+      await adicionarDebito(currentUser.id, 'avulso', getValores().avulso, `Pelada ${sorteio.data} (pagar até ${sab12hStr})`);
     }
     showToast('Presença confirmada! ✅');
   }
 
-  appData.presenca = presenca;
-  await firestoreSet('config', 'presenca', presenca);
+  appData.presenca = presencaObj;
+  await firestoreSet('config', 'presenca', presencaObj);
   saveLocal();
   renderPresenca();
 }
@@ -1247,7 +1339,7 @@ async function desmarcarPresenca() {
 
   if (!naEspera && dentro24h) {
     const ehMens = jogadorMensalista(currentUser.id);
-    const multaValor = ehMens ? 10 : 25;
+    const multaValor = ehMens ? getValores().multa : getValores().avulso;
     const msg = ehMens ? 'R$10 (mensalista)' : 'R$25 (avulso)';
     if (!confirm(`Desmarcar com menos de 24h gera multa de ${msg}. Confirmar?`)) return;
     await adicionarDebito(currentUser.id, 'multa', multaValor, `Desmarcou com <24h — Pelada ${appData.presenca?.data||''}`);
@@ -1265,7 +1357,7 @@ async function desmarcarPresenca() {
       // Avulso promovido recebe débito R$25
       if (!jogadorMensalista(promovido)) {
         const sorteioData = appData.ultimoSorteio?.data;
-        await adicionarDebito(promovido, 'avulso', 25, `Pelada ${sorteioData} (promovido da espera)`);
+        await adicionarDebito(promovido, 'avulso', getValores().avulso, `Pelada ${sorteioData} (promovido da espera)`);
       }
       showToast('Vaga aberta — próximo da espera foi promovido');
     }
@@ -2480,7 +2572,6 @@ function startFlow() {
     }
   } else {
     // No presença list — manual selection
-    if(appData.jogadores.length<15){showToast('Cadastre pelo menos 15 jogadores');return;}
     openModal('modalDataSorteio');
     document.getElementById('inputDataSorteio').value = new Date().toLocaleDateString('pt-BR');
     const info = document.getElementById('dataSorteioInfo');
@@ -2732,7 +2823,7 @@ function confirmarPresentes(){
   sortearTimes();
 }
 function sortearTimes() {
-  const nT=flow.presentes.length===15?3:4;
+  const n=flow.presentes.length; const nT=n===10?2:n===15?3:4;
   const idxMap=Object.fromEntries(calcIdx(appData.jogadores).map(i=>[i.id,i]));
   const alea=(appData.config?.aleatoriedade??15)/100;
   const scores=flow.presentes.map(id=>idxMap[id]?.IF||0);
@@ -3051,7 +3142,7 @@ async function salvarStats() {
     for (const id of presenca.confirmados) {
       const ausente = flow.ausentes.includes(id);
       if (ausente) {
-        const multaNoShow = jogadorMensalista(id) ? 10 : 25;
+        const multaNoShow = jogadorMensalista(id) ? getValores().multa : getValores().avulso;
         await adicionarDebito(id, 'multa', multaNoShow, `Faltou sem desmarcar — Pelada ${data}`);
       }
     }
@@ -3196,6 +3287,36 @@ function renderFinancas() {
   const isAdmin = currentUser?.isAdmin;
 
   // Build financial status for each player
+  // ── PAINEL DE CONFIGURAÇÃO (admin only) ──────────────────
+  const valoresAtualCfg = `
+    <div class="card" style="border-color:var(--border-gold);margin-bottom:16px">
+      <div class="section-lbl" style="margin-bottom:10px">⚙️ VALORES (aplicados em novos débitos)</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div class="field" style="margin:0">
+          <label style="font-size:10px">Mensalidade (R$)</label>
+          <input class="input" id="cfgMensal" type="number" min="0" step="1" value="${getValores().mensal}"
+            style="text-align:center;font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:700">
+        </div>
+        <div class="field" style="margin:0">
+          <label style="font-size:10px">Avulso (R$)</label>
+          <input class="input" id="cfgAvulso" type="number" min="0" step="1" value="${getValores().avulso}"
+            style="text-align:center;font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:700">
+        </div>
+        <div class="field" style="margin:0">
+          <label style="font-size:10px">Multa ausência (R$)</label>
+          <input class="input" id="cfgMulta" type="number" min="0" step="1" value="${getValores().multa}"
+            style="text-align:center;font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:700">
+        </div>
+        <div class="field" style="margin:0">
+          <label style="font-size:10px">Multa semanal (R$)</label>
+          <input class="input" id="cfgMultaSem" type="number" min="0" step="1" value="${getValores().multaSem}"
+            style="text-align:center;font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:700">
+        </div>
+      </div>
+      <button class="btn btn-gold" style="margin-top:12px;font-size:13px" onclick="salvarValores()">💾 SALVAR VALORES</button>
+      <div style="font-size:10px;color:var(--t3);margin-top:8px;text-align:center">Só afeta débitos criados após salvar</div>
+    </div>`;
+
   const rows = jogadores.map(j => {
     const saldo = totalDebitoJogador(j.id);
     const fin = getFinancasJogador(j.id);
@@ -3205,7 +3326,15 @@ function renderFinancas() {
     const mensais = debitos.filter(d=>d.tipo==='mensal');
     const avulsos = debitos.filter(d=>d.tipo==='avulso');
     return { j, saldo, fin, mensalista, multas, mensais, avulsos, debitos };
-  }).sort((a,b) => b.saldo - a.saldo); // most indebted first
+  }).sort((a,b) => {
+    // 1. Mensalistas first
+    if (a.mensalista !== b.mensalista) return b.mensalista ? 1 : -1;
+    // 2. Indebted before clean
+    if ((b.saldo > 0) !== (a.saldo > 0)) return b.saldo > 0 ? 1 : -1;
+    // 3. Higher debt first, then alphabetical
+    if (b.saldo !== a.saldo) return b.saldo - a.saldo;
+    return a.j.nome.localeCompare(b.j.nome, 'pt-BR');
+  }); // mensalistas first, indebted before clean
 
   const inadimplentes = rows.filter(r => r.saldo > 0);
   const emDia = rows.filter(r => r.saldo <= 0);
@@ -3229,7 +3358,7 @@ function renderFinancas() {
   const avisoAtrasado = mostrarAtraso ? ` — ${semanas} sem. em atraso (+R$${(semanas*5).toFixed(0)})` : '';
   const aviso5du = `<div style="background:${corAviso};border:1px solid ${corBorda};border-radius:10px;padding:12px 14px;margin-bottom:16px">
     <div style="font-size:13px;font-weight:700;color:${corTexto}">${icone} MENSALISTAS: Período ${inicioStr} → ${prazoStr}${avisoAtrasado}</div>
-    <div style="font-size:11px;color:var(--t2);margin-top:3px">R$80,00 via Pix: mfnassif16@gmail.com · Vencimento: ${prazoStr}</div>
+    <div style="font-size:11px;color:var(--t2);margin-top:3px">R$${getValores().mensal.toFixed(2)} via Pix: mfnassif16@gmail.com · Vencimento: ${prazoStr}</div>
     ${isAdmin ? `<button onclick="gerarMensalidadesMes()" style="margin-top:8px;background:var(--gold-dim);border:1px solid var(--border-gold);border-radius:8px;color:var(--gold);font-family:'Oswald',sans-serif;font-size:12px;letter-spacing:1px;padding:6px 14px;cursor:pointer;width:100%">📋 GERAR MENSALIDADES DO MÊS</button>` : ''}
   </div>`;
 
@@ -3267,6 +3396,7 @@ function renderFinancas() {
   const inner = cont.querySelector('#financasInner');
   if (!inner) return;
   inner.innerHTML = `
+    ${isAdmin ? valoresAtualCfg : ''}
     ${aviso5du}
     ${inadimplentes.length > 0 ? `
       <div class="section-lbl">EM ABERTO (${inadimplentes.length})</div>
@@ -3376,7 +3506,7 @@ function abrirAddDebito(jogadorId) {
   overlay.addEventListener('click', e => { if(e.target===overlay) overlay.remove(); });
   // Auto-fill valor by tipo
   overlay.querySelector('#debitoTipo').addEventListener('change', e => {
-    const vals = {mensal:80, avulso:25, multa:10, outro:''};
+    const vals = {mensal:getValores().mensal, avulso:getValores().avulso, multa:getValores().multa, outro:''};
     overlay.querySelector('#debitoValor').value = vals[e.target.value] || '';
   });
   overlay.querySelector('#debitoValor').value = 80;
@@ -3496,6 +3626,27 @@ function getUltimo5du() {
   return new Date(anoHoje, mesHoje, dia5duAtual).toLocaleDateString('pt-BR');
 }
 
+async function salvarValores() {
+  if (!currentUser?.isAdmin) return;
+  const mensal   = parseFloat(document.getElementById('cfgMensal')?.value);
+  const avulso   = parseFloat(document.getElementById('cfgAvulso')?.value);
+  const multa    = parseFloat(document.getElementById('cfgMulta')?.value);
+  const multaSem = parseFloat(document.getElementById('cfgMultaSem')?.value);
+  if ([mensal,avulso,multa,multaSem].some(v => isNaN(v) || v < 0)) {
+    showToast('Valores inválidos'); return;
+  }
+  if (!appData.config) appData.config = {};
+  appData.config.valorMensal   = mensal;
+  appData.config.valorAvulso   = avulso;
+  appData.config.valorMulta    = multa;
+  appData.config.valorMultaSem = multaSem;
+  await firestoreSet('config', 'main', appData.config);
+  saveLocal();
+  renderFinancas();
+  showToast(`Valores salvos ✅ — Mensal R$${mensal} · Avulso R$${avulso} · Multa R$${multa}`);
+}
+window.salvarValores = salvarValores;
+
 async function gerarMensalidadesMes() {
   if (!currentUser?.isAdmin) return;
   const mes = getMesReferencia();
@@ -3507,7 +3658,7 @@ async function gerarMensalidadesMes() {
     const fin = getFinancasJogador(j.id);
     const jaTemEsseMes = (fin.debitos||[]).some(d => d.tipo==='mensal' && d.descricao?.includes(mes));
     if (!jaTemEsseMes) {
-      await adicionarDebitoComData(j.id, 'mensal', 80, `Mensalidade ${mes}`, data5du);
+      await adicionarDebitoComData(j.id, 'mensal', getValores().mensal, `Mensalidade ${mes}`, data5du);
       count++;
     }
   }
@@ -3576,11 +3727,16 @@ async function confirmReset() {
 // ─── LOGOUT ──────────────────────────────────────────────────
 function sairDaConta() {
   if (!confirm('Sair da conta?')) return;
+  // Close float menu if open
+  document.getElementById('userFloatMenu')?.remove();
   localStorage.removeItem(LS_USER);
   currentUser = null;
-  document.getElementById('appShell').style.display = 'none';
+  // Hide app, show login
+  const shell = document.getElementById('appShell');
+  if (shell) shell.style.display = 'none';
   showLogin(true);
-  voltarLogin(); // reset login card to initial state
+  // Reset login card
+  setTimeout(() => voltarLogin(), 50);
 }
 
 
@@ -3590,6 +3746,7 @@ function showToast(msg){const t=document.getElementById('toast');t.textContent=m
 window.salvarFirebaseConfig=salvarFirebaseConfig;
 window.usarSemFirebase=usarSemFirebase;
 window.entrar=entrar;
+window.sairDaConta=sairDaConta;
 window.entrarComoVisitante=entrarComoVisitante;
 window.goTo=goTo;
 window.startFlow=startFlow;
