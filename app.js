@@ -2572,60 +2572,62 @@ async function executarRemoverDomingo(jogadorId, idx, modo) {
 
 
 // ─── FOTO DE PERFIL ──────────────────────────────────────────
-async function abrirUploadFoto(jogadorId) {
-  // Se não passar ID, usa o do usuário atual
+function abrirUploadFoto(jogadorId) {
+  // ⚠️ Deve ser síncrono: browsers mobile bloqueiam input.click() após qualquer await
   const targetId = jogadorId || currentUser?.id;
   if (!targetId) { showToast('Nenhum jogador identificado'); return; }
   if (currentUser?.id !== targetId && !currentUser?.isAdmin) { showToast('Sem permissão'); return; }
+  const j = appData.jogadores.find(x => x.id === targetId);
+  if (!j) { showToast('Jogador não cadastrado'); return; }
 
-  // Fecha menu flutuante se aberto
+  // Fecha menu flutuante ANTES de criar o input (síncrono)
   document.getElementById('userFloatMenu')?.remove();
 
-  // Verifica se o jogador está cadastrado
-  const j = appData.jogadores.find(x => x.id === targetId);
-  if (!j) { showToast('Jogador não cadastrado no sistema'); return; }
-
+  // Cria e clica IMEDIATAMENTE — sem nenhum await antes deste ponto
   const input = document.createElement('input');
   input.type = 'file';
-  input.accept = 'image/*';
-  input.style.display = 'none';
+  input.accept = 'image/*;capture=camera';
+  input.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0';
   document.body.appendChild(input);
 
-  input.onchange = async (e) => {
-    const file = e.target.files[0];
+  input.addEventListener('change', async () => {
+    const file = input.files[0];
     document.body.removeChild(input);
     if (!file) return;
-    if (file.size > 5 * 1024 * 1024) { showToast('Foto muito grande (máx 5MB)'); return; }
+    if (file.size > 10 * 1024 * 1024) { showToast('Foto muito grande (máx 10MB)'); return; }
     showToast('Processando foto...');
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        const base64 = ev.target.result;
-        const resized = await resizeImage(base64, 300);
-        j.foto = resized;
-        await firestoreSet('jogadores', targetId, j);
-        // Atualiza estado local do usuário logado
-        if (currentUser?.id === targetId) {
-          currentUser.foto = resized;
-          localStorage.setItem(LS_USER, JSON.stringify(currentUser));
-          const hAvatar = document.getElementById('hAvatar');
-          if (hAvatar) hAvatar.innerHTML = `<img src="${resized}" style="width:100%;height:100%;border-radius:50%;object-fit:cover">`;
-        }
-        saveLocal();
-        showToast('✅ Foto atualizada!');
-        // Atualiza a tela atual
-        if (curScreen === 'jogadores') renderJogs();
-        else openPerfil(targetId);
-      } catch(err) {
-        showToast('Erro ao salvar foto. Tente uma imagem menor.');
+    try {
+      const base64 = await new Promise((res, rej) => {
+        const reader = new FileReader();
+        reader.onload = e => res(e.target.result);
+        reader.onerror = rej;
+        reader.readAsDataURL(file);
+      });
+      const resized = await resizeImage(base64, 400);
+      j.foto = resized;
+      await firestoreSet('jogadores', targetId, j);
+      if (currentUser?.id === targetId) {
+        currentUser.foto = resized;
+        localStorage.setItem(LS_USER, JSON.stringify(currentUser));
+        const hAvatar = document.getElementById('hAvatar');
+        if (hAvatar) hAvatar.innerHTML = `<img src="${resized}" style="width:100%;height:100%;border-radius:50%;object-fit:cover">`;
       }
-    };
-    reader.onerror = () => showToast('Erro ao ler o arquivo');
-    reader.readAsDataURL(file);
-  };
+      saveLocal();
+      showToast('✅ Foto atualizada!');
+      if (curScreen === 'jogadores') renderJogs();
+      else openPerfil(targetId);
+    } catch(err) {
+      console.error('Erro foto:', err);
+      showToast('Erro ao salvar. Tente uma imagem menor.');
+    }
+  });
 
-  input.oncancel = () => { document.body.removeChild(input); };
-  input.click();
+  // Limpa se cancelar sem escolher arquivo
+  input.addEventListener('cancel', () => {
+    try { document.body.removeChild(input); } catch(_) {}
+  });
+
+  input.click(); // deve ser a última linha antes do return
 }
 
 function resizeImage(base64, maxSize) {
