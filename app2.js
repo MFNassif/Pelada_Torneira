@@ -1067,9 +1067,11 @@ function renderPeladasHistorico() {
       // Find matching peladaHist record for this date
       const p = histUnique.find(x => x.data === data);
       const votAberta = p?.votacao?.status === 'aberta';
-      const podeVotar = votAberta && currentUser && !currentUser.isGuest
-        && p.votacao?.elegiveisVotar?.includes(currentUser.id)
-        && !p.votacao?.votos?.[currentUser.id];
+      const jogoiuCard = !currentUser?.isGuest && votAberta && (
+        p.votacao?.elegiveisVotar?.includes(currentUser?.id) ||
+        (p.jogadores||[]).some(j => j.id === currentUser?.id && !j.ausente)
+      );
+      const podeVotar = jogoiuCard && !p.votacao?.votos?.[currentUser?.id];
       const totalVotos = Object.keys(p?.votacao?.votos||{}).length;
       const totalEleg = p?.votacao?.elegiveisVotar?.length||0;
       const mvpNome = p?.mvp?.nome || (votAberta ? '...' : '—');
@@ -1111,16 +1113,14 @@ function openPeladaDetalhe(peladaId) {
   const v = p.votacao;
   const meuVoto = v?.votos?.[currentUser?.id];
   const jaVotou = !!meuVoto;
-  const podeVotar = currentUser && !currentUser.isGuest
-    && v?.status === 'aberta'
-    && v?.elegiveisVotar?.includes(currentUser.id)
-    && !jaVotou
-    && !v?.nominees?.find(n => n.id === currentUser.id); // nominees cannot vote for themselves... actually they can for others
-  // Actually: nominees CAN vote, just not for themselves (handled in votarMvp)
-  const podeVotarFinal = currentUser && !currentUser.isGuest
-    && v?.status === 'aberta'
-    && v?.elegiveisVotar?.includes(currentUser.id)
-    && !jaVotou;
+  // Check eligibility — elegiveisVotar is an array of player IDs
+  // Also check by matching jogador id in peladaJogadores in case elegiveisVotar is missing
+  const jogoiuNaPelada = !currentUser?.isGuest && (
+    (v?.elegiveisVotar?.includes(currentUser?.id)) ||
+    (p.jogadores||[]).some(j => j.id === currentUser?.id && !j.ausente)
+  );
+  const podeVotar = jogoiuNaPelada && v?.status === 'aberta' && !jaVotou;
+  const podeVotarFinal = podeVotar;
 
   // Time remaining
   let tempoHTML = '';
@@ -1279,6 +1279,17 @@ function openPeladaDetalhe(peladaId) {
         </div>
       </div>`;
     }).join('');
+
+  // DEBUG: log voting state to console
+  console.log('[MVP DEBUG]', {
+    currentUserId: currentUser?.id,
+    elegiveisVotar: v?.elegiveisVotar,
+    inclui: v?.elegiveisVotar?.includes(currentUser?.id),
+    status: v?.status,
+    jaVotou,
+    podeVotarFinal,
+    votos: v?.votos
+  });
 
   document.getElementById('peladaDetalheTitle').textContent = `PELADA ${p.data}`;
   // Add delete button for admins
