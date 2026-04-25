@@ -53,41 +53,46 @@ function initFB(cfg) {
 }
 
 // ─── BOOT ────────────────────────────────────────────────────
+// ─── HARDCODED FIREBASE CONFIG ──────────────────────────────
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyBcR4DWJ8Ckth5LFw8B35Jy50pdEqR2XKg",
+  authDomain: "pelada-do-torneira.firebaseapp.com",
+  projectId: "pelada-do-torneira",
+  storageBucket: "pelada-do-torneira.firebasestorage.app",
+  messagingSenderId: "330686521415",
+  appId: "1:330686521415:web:49455477ca203881ae5162"
+};
+
 window.addEventListener('DOMContentLoaded', boot);
 
 async function boot() {
-  const saved = localStorage.getItem(LS_CONFIG);
-  if (!saved) { showSetup(true); return; }
-  const cfg = JSON.parse(saved);
-  if (cfg.local) { useFirebase = false; }
-  else { useFirebase = true; initFB(cfg); }
-  const su = localStorage.getItem(LS_USER);
-  if (!su) { await loadData(); showLogin(true); return; }
-  currentUser = JSON.parse(su);
+  // Firebase config embutido — ninguem precisa configurar
+  useFirebase = true;
+  initFB(FIREBASE_CONFIG);
   await loadData();
+  const su = localStorage.getItem(LS_USER);
+  if (!su) { showLogin(true); return; }
+  currentUser = JSON.parse(su);
+  currentUser.isAdmin = (appData.admins || []).includes(currentUser.id);
+  localStorage.setItem(LS_USER, JSON.stringify(currentUser));
   showApp();
 }
 
 async function entrar() {
   const nome = document.getElementById('loginNome').value.trim();
   if (!nome) { showToast('Digite seu nome'); return; }
+
+  // Check if matches a registered player
   const match = fuzzyFind(nome, appData.jogadores);
   if (match) {
     const isAdmin = (appData.admins || []).includes(match.id);
     currentUser = { id: match.id, nome: match.nome, isAdmin };
   } else {
-    const id = 'p' + Date.now();
-    const nj = { id, nome, nota: 5.0, domingos: [], criadoEm: Date.now() };
-    appData.jogadores.push(nj);
-    await firestoreSet('jogadores', id, nj);
-    // First user = admin
-    if (appData.jogadores.length === 1 || appData.admins.length === 0) {
-      appData.admins = [id];
-      await firestoreSet('config', 'admins', { list: [id] });
-    }
-    currentUser = { id, nome, isAdmin: (appData.admins || []).includes(id) };
-    saveLocal();
+    // Not a registered player — enters as viewer only
+    const isAdmin = false;
+    currentUser = { id: 'guest_' + Date.now(), nome, isAdmin, isGuest: true };
   }
+
   localStorage.setItem(LS_USER, JSON.stringify(currentUser));
   showLogin(false);
   showApp();
@@ -233,9 +238,10 @@ function showApp() {
 // ─── HOME ────────────────────────────────────────────────────
 function renderHome() {
   const n=appData.jogadores.length;
-  document.getElementById('homeSub').textContent=currentUser?`Bem-vindo, ${currentUser.nome}!`:'';
+  const isGuest=currentUser?.isGuest;
+  document.getElementById('homeSub').textContent=currentUser?`Bem-vindo, ${currentUser.nome}!${isGuest?' (visitante)':''}`:'';
   document.getElementById('homeMsg').textContent=n===0?'Nenhum jogador cadastrado ainda':`${n} jogadores cadastrados`;
-  document.getElementById('homeStats').textContent=n>0?`Acesse Jogadores para ver todos`:'';
+  document.getElementById('homeStats').textContent=isGuest?'Você está como visitante — apenas visualização':'';
 }
 
 // ─── JOGADORES ───────────────────────────────────────────────
