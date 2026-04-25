@@ -2522,10 +2522,10 @@ function renderFinancas() {
     const cor = saldo > 0 ? '#ef4444' : '#22c55e';
     const outros = debitos.filter(d=>d.tipo==='outro');
     const debitosDesc = [
-      ...mensais.map(d=>`Mensalidade ${d.data}: R$${d.valor}`),
-      ...avulsos.map(d=>`Avulso ${d.descricao}: R$${d.valor}`),
+      ...mensais.map(d=>`Mensalidade ${d.data}: R$${(+d.valor).toFixed(2)}`),
+      ...avulsos.map(d=>`Avulso ${d.descricao} (${d.data||''}): R$${(+d.valor).toFixed(2)}`),
       ...multas.map(d=>`Multa ${d.data}: R$${d.valor} — ${d.descricao}`),
-      ...outros.map(d=>`${d.descricao||'Outro'} (${d.data}): R$${d.valor}`)
+      ...outros.map((d,i)=>`${d.descricao||'Outro'} (${d.data}): R$${d.valor.toFixed(2)}`)
     ].join('<br>');
 
     return `
@@ -2750,10 +2750,22 @@ async function removerPagamentoIdx(jogadorId, idx) {
 
 // ─── GERAR MENSALIDADES (admin) ──────────────────────────────
 function getUltimo5du() {
-  // Returns the 5du of the current month as a formatted date string
+  // Returns the 5du of the REFERENCE month (same month as getMesReferencia)
   const hoje = new Date();
-  const dia5du = calc5DiasUteis(hoje.getMonth(), hoje.getFullYear());
-  return new Date(hoje.getFullYear(), hoje.getMonth(), dia5du).toLocaleDateString('pt-BR');
+  const mesHoje = hoje.getMonth();
+  const anoHoje = hoje.getFullYear();
+  const dia5duAtual = calc5DiasUteis(mesHoje, anoHoje);
+  const prazoAtual = new Date(anoHoje, mesHoje, dia5duAtual);
+  prazoAtual.setHours(23, 59, 59, 999);
+  hoje.setHours(0, 0, 0, 0);
+  if (hoje > prazoAtual) {
+    // Past current month's 5du — use NEXT month's 5du
+    const proxMes = mesHoje === 11 ? 0 : mesHoje + 1;
+    const proxAno = mesHoje === 11 ? anoHoje + 1 : anoHoje;
+    const dia5duProx = calc5DiasUteis(proxMes, proxAno);
+    return new Date(proxAno, proxMes, dia5duProx).toLocaleDateString('pt-BR');
+  }
+  return new Date(anoHoje, mesHoje, dia5duAtual).toLocaleDateString('pt-BR');
 }
 
 async function gerarMensalidadesMes() {
