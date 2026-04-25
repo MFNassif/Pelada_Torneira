@@ -566,14 +566,13 @@ hr.div { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
   <img src="logo.jpg" class="login-shield">
   <div class="login-title">Pelada do<br>Torneira</div>
   <div class="login-tag">Cerveja · Cigarro · Futebol · Nessa Ordem</div>
-  <div class="login-card">
+  <div class="login-card" id="loginCard">
     <div class="field">
       <label>Seu nome na pelada</label>
       <input class="input" id="loginNome" placeholder="Como te chamam?" maxlength="25" onkeydown="if(event.key==='Enter')entrar()">
     </div>
-    <div id="loginFuzzy" style="display:none;background:var(--gold-dim);border:1px solid var(--border-gold);border-radius:8px;padding:10px 12px;font-size:12px;color:var(--gold-lt);margin-bottom:12px"></div>
     <button class="btn btn-gold" onclick="entrar()">ENTRAR ⚽</button>
-    <div style="font-size:11px;color:var(--t3);text-align:center;margin-top:12px">Nenhuma senha necessária</div>
+    <div style="font-size:11px;color:var(--t3);text-align:center;margin-top:12px">Jogadores cadastrados precisam de senha</div>
   </div>
 </div>
 
@@ -612,10 +611,7 @@ hr.div { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
         SORTEAR TIMES
       </button>
-      <button class="btn btn-ghost" onclick="goTo('jogadores')">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-        VER JOGADORES
-      </button>
+
     </div>
 
     <!-- JOGADORES -->
