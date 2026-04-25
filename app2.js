@@ -850,19 +850,17 @@ function renderPresenca() {
   const isAdminUser = currentUser?.isAdmin;
 
   // ── STATE MACHINE ─────────────────────────────────────────
-  // 1. Times confirmados e ativos → esconde lista (times na home)
-  // 2. Votação MVP aberta → bloqueia lista com aviso
-  // 3. Qualquer outro caso → mostra lista (sempre visível)
+  // 1. Times confirmados e ativos → esconde lista (times já aparecem na home)
+  // 2. Votação MVP aberta → bloqueia com aviso
+  // 3. Qualquer outro caso → mostra lista sempre
 
   const sorteio = appData.ultimoSorteio;
   const timesArr = sorteio ? timesToArr(sorteio.times, Object.keys(sorteio.times||{}).length) : [];
   const timesAtivos = sorteio && sorteio.status === 'confirmado' && timesArr.length > 0;
 
-  if (timesAtivos) {
-    cont.innerHTML = ''; return; // times visíveis na home, oculta lista
-  }
+  if (timesAtivos) { cont.innerHTML = ''; return; }
 
-  // Check votação MVP (dedup first)
+  // Check votação MVP (dedup)
   const peladasSeen = new Set();
   const peladasUnicas = (appData.peladasHist||[]).filter(p => {
     if (!p.id || peladasSeen.has(p.id)) return false;
@@ -880,99 +878,96 @@ function renderPresenca() {
       <div class="card" style="text-align:center;padding:20px;border-color:rgba(234,179,8,.2);background:rgba(234,179,8,.04)">
         <div style="font-size:24px;margin-bottom:8px">⏳</div>
         <div style="font-family:'Oswald',sans-serif;font-size:14px;letter-spacing:1px;color:var(--gold-lt)">AGUARDANDO RESULTADO MVP</div>
-        <div style="font-size:11px;color:var(--t2);margin-top:6px">A lista será liberada após a votação ser concluída</div>
+        <div style="font-size:11px;color:var(--t2);margin-top:6px">A lista será liberada após a votação</div>
         ${isAdminUser ? `<button onclick="encerrarVotacaoForce('${ultimaPelada.id}')" style="margin-top:12px;background:rgba(234,179,8,.15);border:1px solid rgba(234,179,8,.3);border-radius:8px;color:#eab308;font-size:12px;padding:6px 16px;cursor:pointer;font-family:'Oswald',sans-serif;letter-spacing:1px">⚡ ENCERRAR VOTAÇÃO AGORA</button>` : ''}
       </div>`;
     return;
   }
 
   // ── LISTA SEMPRE VISÍVEL ───────────────────────────────────
-  // Show list even without sorteio (for pre-registration)
   const presenca = appData.presenca || { confirmados: [], espera: [], data: '' };
   const dataLista = presenca.data || sorteio?.data || '';
   const confirmados = presenca.confirmados || [];
   const espera = presenca.espera || [];
   const total = confirmados.length;
-  const vagas = total >= 20 ? 20 : 15;
+
+  // Regra de vagas: 15 + 5 espera; quando espera cheia (5) → expande pra 20 + 5 espera
+  const vagas = getVagasLimite(confirmados, espera);
+  // Duração e horário mudam com 20 confirmados
   const horario = total >= 20 ? '11:30 às 13:30' : '11:30 às 13:00';
 
-  // Priority window
   const now = Date.now();
   const peladaDate = parsePeladaDate(dataLista);
   const h24 = 24 * 60 * 60 * 1000;
+  const h48 = 48 * 60 * 60 * 1000;
   const dentro24h = peladaDate && (peladaDate - now) < h24;
-  const fimPrioridade = peladaDate ? peladaDate - (47.5 * 60 * 60 * 1000) : null;
-  const dentroPrioridade = fimPrioridade && now < fimPrioridade;
+  // Janela de prioridade: mensalistas têm prioridade até 48h antes
+  const dentroPrioridade = peladaDate ? now < (peladaDate - h48) : true;
 
   const userId = currentUser?.id;
+  const isGuest = currentUser?.isGuest;
   const ehJogadorCadastrado = !!appData.jogadores.find(x => x.id === userId);
-  const jaConfirmado = confirmados.includes(userId);
-  const naEspera = espera.includes(userId);
-  const inadimplente = ehJogadorCadastrado ? jogadorInadimplente(userId) : false;
+  const jaConfirmado = !!userId && confirmados.includes(userId);
+  const naEspera = !!userId && espera.includes(userId);
+  const inadimplente = ehJogadorCadastrado && !isGuest ? jogadorInadimplente(userId) : false;
   const ehMensalista = userId ? jogadorMensalista(userId) : false;
-  const listaCheia = confirmados.length >= vagas;
+  const listaCheia = total >= vagas;
   const esperaCheia = espera.length >= 5;
 
-  // Pode confirmar: cadastrado, não guest, não inadimplente, não na lista
-  const podeConfirmar = ehJogadorCadastrado
-    && !currentUser?.isGuest
-    && !inadimplente
-    && !jaConfirmado
-    && !naEspera;
-
-  // Sorted names
+  // Nomes ordenados alfabeticamente
   const confirmadosNomes = confirmados.map(id => {
     const j = appData.jogadores.find(x => x.id === id);
     return { id, nome: j?.nome || id, mensalista: jogadorMensalista(id) };
   }).sort((a,b) => a.nome.localeCompare(b.nome, 'pt-BR'));
 
-  const esperaNomes = espera.map(id => {
+  const esperaNomes = espera.map((id,i) => {
     const j = appData.jogadores.find(x => x.id === id);
-    return { id, nome: j?.nome || id };
+    return { id, nome: j?.nome || id, pos: i+1 };
   });
 
   const localAtual = presenca.local || 'R. Juscelino Barbosa 254';
   const horarioAtual = presenca.horario || horario;
-  const descricaoAtual = `Pelada do Torneira${dataLista?' '+dataLista:''}
-${localAtual}
-${horarioAtual}
-Pix: mfnassif16@gmail.com`;
+  const dataExibir = dataLista || getProximoDomingo();
 
-  // Determine button state
+  // ── BOTÃO DO USUÁRIO ──────────────────────────────────────
   let btnHTML = '';
-  if (!userId || currentUser?.isGuest) {
-    btnHTML = ''; // visitantes não veem botão
+  if (!userId || isGuest) {
+    btnHTML = ''; // visitantes: sem botão
   } else if (!ehJogadorCadastrado) {
-    btnHTML = `<button class="btn btn-ghost" disabled style="opacity:0.6;cursor:not-allowed">
-      🚫 JOGADOR NÃO CADASTRADO
-    </button>`;
+    btnHTML = `<button class="btn btn-ghost" disabled style="opacity:0.5;cursor:not-allowed">🚫 JOGADOR NÃO CADASTRADO</button>`;
   } else if (inadimplente) {
-    btnHTML = `<button class="btn btn-danger" onclick="goTo('financas')" style="opacity:0.9">
-      ⚠️ HÁ DÉBITOS EM ABERTO
-    </button>`;
+    btnHTML = `<button class="btn btn-danger" onclick="goTo('financas')" style="opacity:0.9">⚠️ HÁ DÉBITOS EM ABERTO</button>`;
   } else if (jaConfirmado) {
-    btnHTML = `<button class="btn btn-danger" onclick="desmarcarPresenca()">
-      ${dentro24h ? '❌ DESMARCAR (multa R$10)' : 'DESMARCAR'}
-    </button>`;
+    const multaLabel = dentro24h
+      ? ` (multa R$${ehMensalista ? getValores().multa : getValores().avulso})`
+      : '';
+    btnHTML = `<button class="btn btn-danger" onclick="desmarcarPresenca()">❌ DESMARCAR${multaLabel}</button>`;
   } else if (naEspera) {
     btnHTML = `<button class="btn btn-ghost" onclick="desmarcarPresenca()">SAIR DA LISTA DE ESPERA</button>`;
   } else if (dentroPrioridade && !ehMensalista) {
-    btnHTML = `<button class="btn btn-ghost" disabled>⏳ LISTA RESERVADA (mensalistas até Sex 12h)</button>`;
+    btnHTML = `<button class="btn btn-ghost" disabled style="opacity:0.6">⏳ RESERVADO MENSALISTAS (até 48h antes)</button>`;
   } else if (listaCheia && esperaCheia) {
-    btnHTML = `<button class="btn btn-ghost" disabled>LISTA COMPLETA</button>`;
+    btnHTML = `<button class="btn btn-ghost" disabled style="opacity:0.5">LISTA COMPLETA</button>`;
   } else if (listaCheia) {
-    btnHTML = `<button class="btn btn-ghost" onclick="confirmarPresenca()">ENTRAR NA LISTA DE ESPERA</button>`;
+    btnHTML = `<button class="btn btn-gold" onclick="confirmarPresenca()">📋 ENTRAR NA LISTA DE ESPERA</button>`;
   } else {
     btnHTML = `<button class="btn btn-gold" onclick="confirmarPresenca()">✅ CONFIRMAR PRESENÇA</button>`;
   }
 
+  // ── RENDER ────────────────────────────────────────────────
   cont.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-top:16px;margin-bottom:6px">
       <div class="section-lbl" style="margin:0">LISTA DE PRESENÇA</div>
-      ${isAdminUser ? `<button onclick="abrirAdminPresenca()" style="background:var(--gold-dim);border:1px solid var(--border-gold);border-radius:8px;color:var(--gold);font-size:11px;padding:4px 12px;cursor:pointer;font-family:'DM Sans',sans-serif">⚙️ Gerenciar</button>` : ''}
+      ${isAdminUser ? `<div style="display:flex;gap:6px">
+        ${!appData.presenca ? `<button onclick="abrirListaPresenca()" style="background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--t2);font-size:11px;padding:4px 12px;cursor:pointer;font-family:'DM Sans',sans-serif">+ Abrir lista</button>` : ''}
+        <button onclick="abrirAdminPresenca()" style="background:var(--gold-dim);border:1px solid var(--border-gold);border-radius:8px;color:var(--gold);font-size:11px;padding:4px 12px;cursor:pointer;font-family:'DM Sans',sans-serif">⚙️ Gerenciar</button>
+      </div>` : ''}
     </div>
     <div class="card shield-card" style="margin-bottom:12px">
-      <div style="white-space:pre-line;font-size:13px;color:var(--text);line-height:1.7;margin-bottom:14px;font-weight:500">${descricaoAtual}</div>
+      <div style="white-space:pre-line;font-size:13px;color:var(--text);line-height:1.7;margin-bottom:14px;font-weight:500">Pelada do Torneira ${dataExibir}
+${localAtual}
+${horarioAtual}
+Pix: mfnassif16@gmail.com</div>
       ${confirmadosNomes.length > 0 ? `
       <div style="margin-bottom:10px">
         ${confirmadosNomes.map((p,i) => `
@@ -985,18 +980,19 @@ Pix: mfnassif16@gmail.com`;
       ${esperaNomes.length > 0 ? `
       <div style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px">
         <div style="font-size:10px;letter-spacing:1px;color:var(--t2);margin-bottom:6px">LISTA DE ESPERA</div>
-        ${esperaNomes.map((p,i) => `
+        ${esperaNomes.map(p => `
           <div style="font-size:12px;padding:2px 0;color:${p.id===userId?'var(--gold)':'var(--t2)'}">
-            ${i+1}. ${p.nome}${p.id===userId?' ← você':''}
+            ${p.pos}. ${p.nome}${p.id===userId?' ← você':''}
           </div>`).join('')}
       </div>` : ''}
       <div style="font-size:10px;color:var(--t3);margin-top:10px;margin-bottom:12px">
         ${total}/${vagas} confirmados · ${espera.length}/5 espera
-        ${total>=15?' · <span style="color:var(--gold)">✓ pronto para sorteio</span>':''}
+        ${total >= 15 ? ` · <span style="color:var(--gold)">✓ ${total>=20?'4 times / 2h':'3 times / 1h30'}</span>` : ''}
       </div>
       ${btnHTML}
     </div>`;
 }
+
 
 
 async function checkMensalidadeAtual() {
@@ -1006,43 +1002,63 @@ async function checkMensalidadeAtual() {
 }
 
 async function checkAvulsosInadimplentes() {
-  if (!appData.presenca?.confirmados) return;
-  const sorteio = appData.ultimoSorteio;
-  if (!sorteio) return;
-  const peladaDate = parsePeladaDate(sorteio.data);
+  // Verifica 24h antes da pelada: avulsos inadimplentes saem da lista → promove da espera
+  // NUNCA gera multa aqui (a multa de ausência é gerada ao finalizar a partida)
+  const p = appData.presenca;
+  if (!p?.confirmados?.length) return;
+  const peladaDate = parsePeladaDate(p.data || appData.ultimoSorteio?.data);
   if (!peladaDate) return;
-  // Sábado 12h = domingo 11:30 - 23.5h
-  const sab12h = peladaDate - (23.5 * 60 * 60 * 1000);
-  if (Date.now() < sab12h) return; // not yet saturday 12h
+  const h24 = 24 * 60 * 60 * 1000;
+  if (Date.now() < peladaDate - h24) return; // Ainda não chegou a janela de 24h
 
-  const presenca = appData.presenca;
   let changed = false;
   const removidos = [];
 
-  for (const id of [...(presenca.confirmados||[])]) {
+  for (const id of [...p.confirmados]) {
     if (jogadorMensalista(id)) continue;
+    // Avulso com débito não quitado dentro das 24h → remove da lista
     if (!jogadorInadimplente(id)) continue;
-    // Avulso inadimplente after sab 12h — remove from list
-    presenca.confirmados = presenca.confirmados.filter(x=>x!==id);
+    p.confirmados = p.confirmados.filter(x => x !== id);
+    // Move para o FINAL da espera (perdeu a vez por inadimplência)
+    p.espera = [...(p.espera||[]), id];
     removidos.push(id);
     changed = true;
   }
 
   if (changed) {
-    // Promote from espera
-    for (const removidoId of removidos) {
-      if ((presenca.espera||[]).length > 0) {
-        const promovido = presenca.espera[0];
-        presenca.espera = presenca.espera.slice(1);
-        presenca.confirmados.push(promovido);
+    // Para cada removido, promover o primeiro da espera (que não seja um dos removidos)
+    for (const removido of removidos) {
+      const candidatos = (p.espera||[]).filter(id => !removidos.includes(id));
+      if (candidatos.length > 0) {
+        const promovido = candidatos[0];
+        p.espera = p.espera.filter(id => id !== promovido);
+        p.confirmados.push(promovido);
         if (!jogadorMensalista(promovido)) {
-          await adicionarDebito(promovido, 'avulso', getValores().avulso, `Pelada ${sorteio.data} (promovido)`);
+          await gerarDebitoAvulsoPresenca(promovido, p.data, 'promovido — inadimplente substituído');
         }
       }
     }
-    appData.presenca = presenca;
-    await firestoreSet('config', 'presenca', presenca);
+    appData.presenca = p;
+    await firestoreSet('config', 'presenca', p);
     saveLocal();
+    renderPresenca();
+  }
+}
+
+async function gerarMultasAusencia(ausentes, peladaData) {
+  // Chamada ao finalizar partida para gerar multas dos ausentes
+  for (const uid of ausentes) {
+    const ehMens = jogadorMensalista(uid);
+    const multaValor = ehMens ? getValores().multa : getValores().avulso;
+    // Não gera multa duplicada
+    const fin = getFinancasJogador(uid);
+    const jaTemMulta = (fin.debitos||[]).some(d =>
+      d.tipo==='multa' && d.descricao?.includes('ausente') && d.descricao?.includes(peladaData)
+    );
+    if (!jaTemMulta) {
+      await adicionarDebito(uid, 'multa', multaValor,
+        `Ausente sem aviso — Pelada ${peladaData}`);
+    }
   }
 }
 
@@ -1063,7 +1079,14 @@ window.abrirListaPresenca = abrirListaPresenca;
 
 function abrirAdminPresenca() {
   if (!currentUser?.isAdmin) return;
-  const presenca = appData.presenca || { confirmados:[], espera:[], data: appData.ultimoSorteio?.data || getProximoDomingo() };
+  // Create presença if doesn't exist yet
+  if (!appData.presenca) {
+    const novaData = appData.ultimoSorteio?.data || getProximoDomingo();
+    appData.presenca = { confirmados:[], espera:[], data: novaData };
+    firestoreSet('config','presenca',appData.presenca).catch(()=>{});
+    saveLocal();
+  }
+  const presenca = appData.presenca;
   const sorteio = appData.ultimoSorteio;
 
   // Build list of all players not yet confirmed
@@ -1112,12 +1135,12 @@ function abrirAdminPresenca() {
         const ehAvulso = j && !jogadorMensalista(id);
         const saldoAvulso = ehAvulso ? (() => {
           const fin = getFinancasJogador(id);
-          const sorteioData = appData.ultimoSorteio?.data || presenca.data || '';
-          const debAvulso = (fin.debitos||[]).filter(d =>
-            d.tipo==='avulso' && d.descricao?.includes(sorteioData)
-          ).reduce((s,d)=>s+(d.valor||0),0);
-          const pagAvulso = (fin.pagamentos||[]).reduce((s,p)=>s+(p.valor||0),0);
-          return Math.max(0, debAvulso - pagAvulso);
+          const peladaData = presenca.data || appData.ultimoSorteio?.data || '';
+          // Débitos de avulso não quitados desta pelada
+          const debs = (fin.debitos||[]).filter(d =>
+            d.tipo==='avulso' && !d.quitado && d.descricao?.includes(peladaData)
+          );
+          return debs.reduce((s,d)=>s+(d.valor||0),0);
         })() : 0;
         return `<div style="display:flex;align-items:center;gap:6px;padding:7px 0;border-bottom:1px solid var(--border)">
           <span style="color:var(--t2);font-size:11px;min-width:18px">${i+1}.</span>
@@ -1158,14 +1181,10 @@ async function adminAdicionarPresenca(lista) {
   presenca[lista].push(sel);
   appData.presenca = presenca;
   await firestoreSet('config', 'presenca', presenca);
-  // Se avulso adicionado aos confirmados → gera débito R$25 automaticamente
+  // Se avulso adicionado aos confirmados → gera débito como PENDÊNCIA (não como pago)
   if (lista === 'confirmados' && !jogadorMensalista(sel)) {
     const sorteioData = appData.ultimoSorteio?.data || presenca.data || '';
-    const peladaDate = parsePeladaDate(sorteioData);
-    const sab12h = peladaDate ? new Date(peladaDate - 24*60*60*1000).setHours(12,0,0,0) : null;
-    const sab12hStr = sab12h ? new Date(sab12h).toLocaleString('pt-BR') : 'Sáb 12h';
-    await adicionarDebito(sel, 'avulso', getValores().avulso,
-      `Pelada ${sorteioData} (pagar até ${sab12hStr})`);
+    await gerarDebitoAvulsoPresenca(sel, sorteioData, 'adicionado pelo admin');
   }
   saveLocal();
   document.getElementById('modalAdminPresenca')?.remove();
@@ -1197,6 +1216,22 @@ window.adminBaixaAvulsoPresenca = adminBaixaAvulsoPresenca;
 async function adminRemoverPresenca(lista, jogadorId) {
   const presenca = appData.presenca;
   if (!presenca) return;
+
+  // Se era confirmado (não espera) e avulso → cancelar débito dessa pelada
+  if (lista === 'confirmados' && !jogadorMensalista(jogadorId)) {
+    const peladaData = presenca.data || appData.ultimoSorteio?.data || '';
+    const fin = getFinancasJogador(jogadorId);
+    if (fin.debitos && peladaData) {
+      const idxDeb = [...fin.debitos].reverse()
+        .findIndex(d => d.tipo==='avulso' && d.descricao?.includes(peladaData) && !d.quitado);
+      if (idxDeb >= 0) {
+        fin.debitos.splice(fin.debitos.length-1-idxDeb, 1);
+        await firestoreSet('financas', jogadorId, fin);
+        saveLocal();
+      }
+    }
+  }
+
   presenca[lista] = (presenca[lista]||[]).filter(x => x !== jogadorId);
   appData.presenca = presenca;
   await firestoreSet('config', 'presenca', presenca);
@@ -1243,142 +1278,189 @@ function parsePeladaDate(dateStr) {
   return new Date(+parts[2], +parts[1]-1, +parts[0], 11, 30).getTime();
 }
 
+// ─── PRESENÇA HELPERS ────────────────────────────────────────
+function getVagasLimite(confirmados, espera) {
+  // Regra:
+  // - Começa com 15 vagas + 5 espera
+  // - Se a espera estiver cheia (5/5), a lista expande para 20 vagas + 5 espera
+  // - Máximo absoluto: 20 confirmados + 5 espera
+  const totalEspera = (espera||[]).length;
+  return (totalEspera >= 5 || (confirmados||[]).length >= 20) ? 20 : 15;
+}
+
+async function promoverDaEspera(presencaObj, motivo) {
+  if (!(presencaObj.espera||[]).length) return;
+  const promovido = presencaObj.espera[0];
+  presencaObj.espera = presencaObj.espera.slice(1);
+  presencaObj.confirmados.push(promovido);
+  if (!jogadorMensalista(promovido)) {
+    const data = presencaObj.data || '';
+    await gerarDebitoAvulsoPresenca(promovido, data, `promovido da espera — ${motivo}`);
+  }
+  return promovido;
+}
+
+async function gerarDebitoAvulsoPresenca(uid, presencaData, motivo) {
+  // Gera débito de avulso como PENDÊNCIA (quitado: false) — admin dá baixa depois
+  const peladaDate = parsePeladaDate(presencaData);
+  const h24 = 24 * 60 * 60 * 1000;
+  const sab12h = peladaDate ? new Date(peladaDate - h24).setHours(12,0,0,0) : null;
+  const sab12hStr = sab12h ? new Date(sab12h).toLocaleDateString('pt-BR') + ' 12h' : 'Sáb 12h';
+  const descricao = motivo
+    ? `Pelada ${presencaData} — ${motivo} (pagar até ${sab12hStr})`
+    : `Pelada ${presencaData} (pagar até ${sab12hStr})`;
+  // Verifica se já existe débito para essa pelada (evita duplicata)
+  const fin = getFinancasJogador(uid);
+  const jaTemDebito = (fin.debitos||[]).some(d => d.tipo==='avulso' && d.descricao?.includes(presencaData) && !d.quitado);
+  if (!jaTemDebito) {
+    await adicionarDebito(uid, 'avulso', getValores().avulso, descricao);
+  }
+}
+
 async function confirmarPresenca() {
   if (!currentUser || currentUser.isGuest) { showToast('Faça login para confirmar'); return; }
 
-  // Must be a registered player
   const jogador = appData.jogadores.find(x => x.id === currentUser.id);
-  if (!jogador) {
-    showToast('Apenas jogadores cadastrados podem confirmar presença');
-    return;
-  }
-
+  if (!jogador) { showToast('Apenas jogadores cadastrados podem confirmar presença'); return; }
   if (jogadorInadimplente(currentUser.id)) {
-    showToast('⚠️ Você possui pendências financeiras. Regularize para confirmar.');
-    return;
+    showToast('⚠️ Você possui pendências financeiras. Regularize para confirmar.'); return;
   }
 
-  const sorteio = appData.ultimoSorteio;
-  const presenca = appData.presenca;
-  if (!presenca && !sorteio) { showToast('Lista de presença não disponível'); return; }
-  const presencaObj = presenca || { confirmados: [], espera: [], data: sorteio?.data || '' };
-  const confirmados = presencaObj.confirmados || [];
-  const espera = presencaObj.espera || [];
+  // Auto-create presença se não existir
+  if (!appData.presenca) {
+    const dataRef = appData.ultimoSorteio?.data || getProximoDomingo();
+    appData.presenca = { confirmados:[], espera:[], data: dataRef };
+    await firestoreSet('config','presenca', appData.presenca);
+    saveLocal();
+  }
 
-  if (confirmados.includes(currentUser.id) || espera.includes(currentUser.id)) {
+  const p = appData.presenca;
+  if (!p.confirmados) p.confirmados = [];
+  if (!p.espera) p.espera = [];
+
+  const uid = currentUser.id;
+  if (p.confirmados.includes(uid) || p.espera.includes(uid)) {
     showToast('Você já está na lista'); return;
   }
 
   const now = Date.now();
-  const peladaDate = parsePeladaDate(sorteio.data);
-  // Priority window: mensalistas only until Friday 12h (47.5h before Sunday 11:30)
-  const fimPrioridade = peladaDate ? peladaDate - (47.5 * 60 * 60 * 1000) : null;
-  const dentroPrioridade = fimPrioridade && now < fimPrioridade;
-  const aposJanela = !dentroPrioridade;
-  const h24 = 24 * 60 * 60 * 1000;
-  const dentro24h = peladaDate && (peladaDate - now) < h24;
+  const peladaDate = parsePeladaDate(p.data);
+  const h48 = 48 * 60 * 60 * 1000;
+  const ehMensalista = jogadorMensalista(uid);
 
-  const vagas = confirmados.length >= 20 ? 20 : 15;
-  const listaCheia = confirmados.length >= vagas;
-  const ehMensalista = jogadorMensalista(currentUser.id);
-
+  // Janela de prioridade: somente mensalistas até 48h antes
+  const dentroPrioridade = peladaDate ? now < (peladaDate - h48) : true; // sem data = prioridade ativa
   if (dentroPrioridade && !ehMensalista) {
-    showToast('⏳ Lista reservada para mensalistas até Sex 12h');
-    return;
+    showToast('⏳ Lista reservada para mensalistas até 48h antes da pelada'); return;
   }
 
-  if (listaCheia) {
-    if (ehMensalista && aposJanela) {
-      // Mensalista pode deslocar último avulso
-      const ultimoAvulso = [...confirmados].reverse().find(id => !jogadorMensalista(id));
-      if (ultimoAvulso) {
-        presencaObj.confirmados = confirmados.filter(id => id !== ultimoAvulso);
-        if (!presencaObj.espera) presencaObj.espera = [];
-        presencaObj.espera.unshift(ultimoAvulso);
-        presencaObj.confirmados.push(currentUser.id);
-        showToast('Vaga garantida como mensalista ✅');
-      } else {
-        if (espera.length >= 5) { showToast('Lista de espera cheia'); return; }
-        presencaObj.espera = [...espera, currentUser.id];
-        showToast('Adicionado à lista de espera');
-      }
-    } else {
-      if (espera.length >= 5) { showToast('Lista de espera cheia'); return; }
-      presenca.espera = [...espera, currentUser.id];
-      showToast('Adicionado à lista de espera');
-    }
-  } else {
-    presencaObj.confirmados = [...confirmados, currentUser.id];
+  const vagas = getVagasLimite(p.confirmados, p.espera);
+  const listaCheia = p.confirmados.length >= vagas;
+  const esperaCheia = p.espera.length >= 5;
+
+  if (!listaCheia) {
+    // Vaga disponível → confirmar
+    p.confirmados.push(uid);
     if (!ehMensalista) {
-      const sab12h = peladaDate ? new Date(peladaDate - h24).setHours(12,0,0,0) : null;
-      const sab12hStr = sab12h ? new Date(sab12h).toLocaleString('pt-BR') : 'Sáb 12h';
-      await adicionarDebito(currentUser.id, 'avulso', getValores().avulso, `Pelada ${sorteio.data} (pagar até ${sab12hStr})`);
+      await gerarDebitoAvulsoPresenca(uid, p.data, null);
     }
     showToast('Presença confirmada! ✅');
+  } else if (ehMensalista) {
+    // Lista cheia, mensalista → desloca o ÚLTIMO avulso para a espera
+    const ultimoAvulso = [...p.confirmados].reverse().find(id => !jogadorMensalista(id));
+    if (ultimoAvulso && !esperaCheia) {
+      p.confirmados = p.confirmados.filter(id => id !== ultimoAvulso);
+      p.espera.push(ultimoAvulso); // avulso vai pro FIM da espera (mantém ordem de chegada)
+      p.confirmados.push(uid);
+      // Cancelar o débito do avulso deslocado (ele não vai jogar)
+      const finDesloc = getFinancasJogador(ultimoAvulso);
+      if (finDesloc.debitos) {
+        const idxDeb = [...finDesloc.debitos].reverse()
+          .findIndex(d => d.tipo==='avulso' && d.descricao?.includes(p.data||'') && !d.quitado);
+        if (idxDeb >= 0) {
+          finDesloc.debitos.splice(finDesloc.debitos.length-1-idxDeb, 1);
+          await firestoreSet('financas', ultimoAvulso, finDesloc);
+          saveLocal();
+        }
+      }
+      showToast('Vaga garantida! Último avulso foi para a lista de espera ✅');
+    } else if (!esperaCheia) {
+      p.espera.push(uid);
+      showToast('Adicionado à lista de espera');
+    } else {
+      showToast('Lista e espera completas'); return;
+    }
+  } else {
+    // Lista cheia, avulso → vai para espera
+    if (esperaCheia) { showToast('Lista de espera cheia (5/5)'); return; }
+    p.espera.push(uid);
+    showToast('Adicionado à lista de espera ✅');
   }
 
-  appData.presenca = presencaObj;
-  await firestoreSet('config', 'presenca', presencaObj);
+  appData.presenca = p;
+  await firestoreSet('config', 'presenca', p);
   saveLocal();
   renderPresenca();
 }
 
 async function desmarcarPresenca() {
   if (!currentUser) return;
-  const presenca = appData.presenca;
-  if (!presenca) return;
+  const p = appData.presenca;
+  if (!p) return;
+
+  const uid = currentUser.id;
+  const naEspera = (p.espera||[]).includes(uid);
+  const naLista = (p.confirmados||[]).includes(uid);
+  if (!naEspera && !naLista) return;
 
   const now = Date.now();
-  const peladaDate = parsePeladaDate(presenca.data || appData.ultimoSorteio?.data);
+  const peladaDate = parsePeladaDate(p.data || appData.ultimoSorteio?.data);
   const h24 = 24 * 60 * 60 * 1000;
   const dentro24h = peladaDate && (peladaDate - now) < h24;
-
-  const naEspera = (presenca.espera||[]).includes(currentUser.id);
-
-  if (!naEspera && dentro24h) {
-    const ehMens = jogadorMensalista(currentUser.id);
-    const multaValor = ehMens ? getValores().multa : getValores().avulso;
-    const msg = ehMens ? 'R$10 (mensalista)' : 'R$25 (avulso)';
-    if (!confirm(`Desmarcar com menos de 24h gera multa de ${msg}. Confirmar?`)) return;
-    await adicionarDebito(currentUser.id, 'multa', multaValor, `Desmarcou com <24h — Pelada ${appData.presenca?.data||''}`);
-  }
+  const ehMens = jogadorMensalista(uid);
 
   if (naEspera) {
-    presenca.espera = presenca.espera.filter(id => id !== currentUser.id);
+    // Sair da espera — sem penalidade
+    p.espera = p.espera.filter(id => id !== uid);
+    showToast('Removido da lista de espera');
   } else {
-    presenca.confirmados = (presenca.confirmados||[]).filter(id => id !== currentUser.id);
-    // Promote first from espera
-    if ((presenca.espera||[]).length > 0) {
-      const promovido = presenca.espera[0];
-      presenca.espera = presenca.espera.slice(1);
-      presenca.confirmados.push(promovido);
-      // Avulso promovido recebe débito R$25
-      if (!jogadorMensalista(promovido)) {
-        const sorteioData = appData.ultimoSorteio?.data;
-        await adicionarDebito(promovido, 'avulso', getValores().avulso, `Pelada ${sorteioData} (promovido da espera)`);
-      }
-      showToast('Vaga aberta — próximo da espera foi promovido');
-    }
-    // Remove avulso debt if cancelling with >24h
-    if (!naEspera && !dentro24h && !jogadorMensalista(currentUser.id)) {
-      const fin = getFinancasJogador(currentUser.id);
-      // Remove last avulso debt for this pelada
-      if (fin.debitos) {
-        const sorteioData = appData.ultimoSorteio?.data;
-        const idx = [...fin.debitos].reverse().findIndex(d => d.tipo==='avulso' && d.descricao?.includes(sorteioData));
-        if (idx >= 0) {
-          fin.debitos.splice(fin.debitos.length-1-idx, 1);
-          await firestoreSet('financas', currentUser.id, fin);
+    // Desmarcar da lista confirmada
+    if (dentro24h) {
+      // < 24h: gera multa automática
+      const multaValor = ehMens ? getValores().multa : getValores().avulso;
+      const tipoStr = ehMens ? `mensalista — R$${multaValor}` : `avulso — R$${multaValor} (valor integral)`;
+      if (!confirm(`Desmarcar com menos de 24h gera multa de ${tipoStr}. Confirmar?`)) return;
+      await adicionarDebito(uid, 'multa', multaValor, `Desmarcou <24h — Pelada ${p.data||''}`);
+      showToast(`⚠️ Multa de R$${multaValor} gerada`);
+    } else {
+      // > 24h: avulso tem débito cancelado
+      if (!ehMens) {
+        const fin = getFinancasJogador(uid);
+        if (fin.debitos) {
+          const idx = [...fin.debitos].reverse()
+            .findIndex(d => d.tipo==='avulso' && d.descricao?.includes(p.data||'') && !d.quitado);
+          if (idx >= 0) {
+            fin.debitos.splice(fin.debitos.length-1-idx, 1);
+            await firestoreSet('financas', uid, fin);
+            saveLocal();
+          }
         }
       }
+      showToast('Presença desmarcada');
+    }
+
+    p.confirmados = p.confirmados.filter(id => id !== uid);
+
+    // Promover primeiro da espera
+    if ((p.espera||[]).length > 0) {
+      await promoverDaEspera(p, 'vaga liberada');
     }
   }
 
-  appData.presenca = presenca;
-  await firestoreSet('config', 'presenca', presenca);
+  appData.presenca = p;
+  await firestoreSet('config', 'presenca', p);
   saveLocal();
   renderPresenca();
-  if (!naEspera && !dentro24h) showToast('Presença desmarcada');
 }
 
 // ─── HISTÓRICO DE PELADAS NA HOME ────────────────────────────
@@ -1611,7 +1693,7 @@ function openPeladaDetalhe(peladaId) {
       const isMvp = p.mvp?.id === j.id;
       const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':`#${i+1}`;
       const minhasReacoes = reacoes[j.id] || {};
-      const emojisBtns = ['🔥','👑','💀','🎯','⚽','😂','👏','💪','🌈','💩'].map(em => {
+      const emojisBtns = ['🔥','👑','💀','🎯','⚽','😂','👏','💪','🌈','💩','🚬','🍺'].map(em => {
         const count = Object.values(minhasReacoes).filter(r=>r===em).length;
         const minha = currentUser && minhasReacoes[currentUser.id] === em;
         return `<button onclick="reagir('${p.id}','${j.id}','${em}')" style="background:${minha?'rgba(201,168,76,.2)':'rgba(255,255,255,.05)'};border:1px solid ${minha?'var(--border-gold)':'rgba(255,255,255,.08)'};border-radius:99px;padding:3px 8px;cursor:pointer;font-size:12px;display:inline-flex;align-items:center;gap:3px;color:var(--text)">${em}${count>0?`<span style="font-size:10px;color:var(--t2)">${count}</span>`:''}</button>`;
@@ -2551,6 +2633,7 @@ const T_COLORS=['t0','t1','t2','t3'];
 
 function startFlow() {
   if(!currentUser?.isAdmin){showToast('Sem permissão');return;}
+  // Sempre lê o estado mais recente da presença do appData (já sincronizado via onSnapshot)
   const confirmados = appData.presenca?.confirmados || [];
   const n = confirmados.length;
   openModal('modalDataSorteio');
@@ -2559,10 +2642,10 @@ function startFlow() {
   const info = document.getElementById('dataSorteioInfo');
   if (info) {
     if (n === 15 || n === 20) {
-      info.textContent = `✅ ${n} confirmados → vai sortear ${n===15?3:4} times automaticamente`;
+      info.textContent = `✅ ${n} confirmados → sorteia ${n===15?3:4} times automaticamente`;
       info.style.color = 'var(--gold)';
     } else if (n > 0) {
-      info.textContent = `📋 ${n} confirmados na lista — seleção manual (sortear requer 15 ou 20)`;
+      info.textContent = `📋 ${n} confirmados na lista — abrirá seleção manual (sortear requer 10, 15 ou 20)`;
       info.style.color = '#eab308';
     } else {
       info.textContent = 'Sem lista de presença — seleção manual de jogadores';
@@ -2576,29 +2659,33 @@ async function confirmarDataSorteio() {
   if (!data) { showToast('Informe a data da pelada'); return; }
   closeModal('modalDataSorteio');
 
-  const confirmados = appData.presenca?.confirmados || [];
+  // Lê confirmados do appData (sempre sincronizado via onSnapshot)
+  // APENAS confirmados (não espera) vão para o sorteio
+  const confirmados = (appData.presenca?.confirmados || [])
+    .filter(id => appData.jogadores.find(x=>x.id===id)); // só cadastrados
   const n = confirmados.length;
 
   appData.restricoes = appData.restricoes.filter(r=>r.duracao!=='domingo');
   flow = {
     step: 'sel',
-    presentes: [...confirmados], // pre-populate with lista (even if empty)
+    presentes: [...confirmados], // pré-popula APENAS com confirmados cadastrados
     times:[], data,
-    ausentes:[], statsIdx:0, statsOrder:[], statsData:{}, _saving:false
+    ausentes:[], statsIdx:0, statsOrder:[], statsData:{}, _saving:false,
+    semTimes: false
   };
 
-  if (n === 15 || n === 20) {
-    // Lista perfeita → auto-sorteia direto, sem tela de seleção
+  document.getElementById('flow').style.display = 'block';
+
+  if (n === 10 || n === 15 || n === 20) {
+    // Número perfeito → sorteia direto sem tela de seleção
     saveLocal();
-    sortearTimes(); // sets flow.step to 'times' and renders
+    sortearTimes();
   } else {
-    // Manual (lista vazia ou número diferente de 15/20)
+    // Qualquer outro número → abre seleção manual pré-populada com confirmados
     flow.step = 'sel';
     saveLocal();
     renderFlow();
   }
-
-  document.getElementById('flow').style.display = 'block';
 }
 function closeFlow() {
   if (flow.step === 'times') {
@@ -2648,7 +2735,8 @@ function renderFlowLista(c,t) {
 }
 
 function confirmarListaSemTimes() {
-  // Build stats order from presentes (not ausentes), no times
+  // Fluxo sem times: semTimes=true, statsOrder = presentes não ausentes
+  flow.semTimes = true;
   flow.statsOrder = flow.presentes.filter(id => !flow.ausentes.includes(id));
   flow.statsData = {};
   flow.statsOrder.forEach(id => { flow.statsData[id] = {gols:0, assists:0, vitorias:0}; });
@@ -2659,37 +2747,33 @@ function confirmarListaSemTimes() {
 
 function renderFlowSel(c,t) {
   t.textContent='SELECIONAR PRESENTES';
-  const sel=flow.presentes, n=sel.length;
+  const sel=flow.presentes;
+  // Conta apenas os que são jogadores cadastrados
+  const nCadastrados = sel.filter(id => appData.jogadores.find(x=>x.id===id)).length;
+  const n = nCadastrados;
   const validSortear = n===10||n===15||n===20;
   const validSemTimes = n>0 && !validSortear;
-  const nTimes = n===10?2:n===15?3:n===20?4:null;
 
-  // Status line
   let hint;
-  if (n===10) {
-    hint=`<span style="color:#22c55e">✓ ${n} jogadores → 2 times</span>`;
-  } else if (n===15) {
-    hint=`<span style="color:#22c55e">✓ ${n} jogadores → 3 times</span>`;
-  } else if (n===20) {
-    hint=`<span style="color:#22c55e">✓ ${n} jogadores → 4 times</span>`;
-  } else if (n===0) {
-    hint=`Selecione os jogadores presentes`;
-  } else {
-    const proxSortear = n<10?10:n<15?15:n<20?20:null;
-    hint=`<span style="color:#eab308">${n} selecionados${proxSortear?` · faltam ${proxSortear-n} para sortear`:' · máx 20'}</span>`;
+  if (n===10) hint=`<span style="color:#22c55e">✓ ${n} jogadores → 2 times</span>`;
+  else if (n===15) hint=`<span style="color:#22c55e">✓ ${n} jogadores → 3 times</span>`;
+  else if (n===20) hint=`<span style="color:#22c55e">✓ ${n} jogadores → 4 times</span>`;
+  else if (n===0) hint=`Selecione os jogadores presentes`;
+  else {
+    const prox = n<10?10:n<15?15:n<20?20:null;
+    hint=`<span style="color:#eab308">${n} selecionados${prox?` · faltam ${prox-n} para sortear`:' · mais que 20, remova alguns'}</span>`;
   }
 
-  // Show confirmed from presença at top if any
   const confirmadosPres = appData.presenca?.confirmados || [];
   const temPresenca = confirmadosPres.length > 0;
 
   c.innerHTML=`
     ${temPresenca ? `<div style="background:rgba(201,168,76,.08);border:1px solid var(--border-gold);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:var(--t2)">
-      📋 ${confirmadosPres.length} confirmados na lista de presença — pré-selecionados abaixo
+      📋 ${confirmadosPres.length} confirmados na lista · <strong style="color:var(--gold-lt)">${n} cadastrados selecionados</strong>
     </div>` : ''}
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
       <div style="font-size:13px;color:var(--t2)">${hint}</div>
-      <div style="font-family:'JetBrains Mono',monospace;font-size:22px;color:${valid?'#22c55e':'var(--t2)'};font-weight:700">${n}</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:22px;color:${validSortear?'#22c55e':'var(--t2)'};font-weight:700">${n}</div>
     </div>
     ${appData.jogadores.map(j=>{
       const isSel = sel.includes(j.id);
@@ -2711,15 +2795,19 @@ function renderFlowSel(c,t) {
       <button class="btn btn-gold" ${validSortear?'':'disabled'} onclick="confirmarPresentes()">
         ⚽ SORTEAR TIMES ${n>0?'('+n+')':''}
       </button>
-      <button class="btn btn-ghost" ${validSemTimes&&!validSortear?'':'disabled'} onclick="irParaListaSemTimes()"
-        style="${validSemTimes&&!validSortear?'':'opacity:0.4;cursor:not-allowed'}">
+      <button class="btn btn-ghost" ${validSemTimes?'':'disabled'} onclick="irParaListaSemTimes()"
+        style="${validSemTimes?'':'opacity:0.4;cursor:not-allowed'}">
         📋 REGISTRAR SEM TIMES ${n>0?'('+n+')':''}
       </button>
     </div>`;
 }
 
+
 function irParaListaSemTimes() {
   if (flow.presentes.length === 0) { showToast('Selecione pelo menos 1 jogador'); return; }
+  // Filtra só cadastrados antes de entrar no fluxo sem times
+  flow.presentes = flow.presentes.filter(id => appData.jogadores.find(x=>x.id===id));
+  flow.semTimes = true;
   flow.step = 'lista';
   flow.ausentes = [];
   renderFlow();
@@ -2755,11 +2843,12 @@ function renderFlowTimes(c,t) {
 // ─── Step: selecionar ausentes (quem faltou) ─────────────────
 function renderFlowAusentes(c,t) {
   t.textContent = 'QUEM FALTOU?';
-  const todos = flow.times.flat();
+  // Mostra todos os que estavam no sorteio (times ou presentes sem times)
+  const todos = flow.semTimes ? flow.presentes : flow.times.flat();
   const aus = flow.ausentes;
   c.innerHTML = `
     <div style="font-size:13px;color:var(--t2);margin-bottom:14px">
-      Marque quem estava no sorteio mas <strong style="color:#ef4444">não compareceu</strong>
+      Marque quem estava confirmado mas <strong style="color:#ef4444">não compareceu</strong>
     </div>
     ${todos.map(id => {
       const j = appData.jogadores.find(x=>x.id===id);
@@ -2772,7 +2861,7 @@ function renderFlowAusentes(c,t) {
     }).join('')}
     <div style="margin-top:14px">
       <div style="font-size:11px;color:var(--t3);margin-bottom:10px;text-align:center">
-        ${aus.length > 0 ? `${aus.length} falta${aus.length>1?'s':''} — contabilizadas como domingo para ranking` : 'Ninguém faltou? Ótimo!'}
+        ${aus.length > 0 ? `${aus.length} falta${aus.length>1?'s':''} — multa gerada automaticamente` : 'Ninguém faltou? Ótimo!'}
       </div>
       <button class="btn btn-gold" onclick="confirmarAusentes()">CONTINUAR → ESTATÍSTICAS</button>
     </div>`;
@@ -2785,9 +2874,11 @@ function toggleAusente(id) {
   renderFlow();
 }
 
-function confirmarAusentes() {
-  // Build stats order: only presentes (not ausentes)
-  flow.statsOrder = (flow.semTimes ? flow.presentes : flow.times.flat()).filter(id => !flow.ausentes.includes(id));
+async function confirmarAusentes() {
+  // Multas são geradas em salvarStats (não aqui) para evitar duplicação
+  // Build stats order: apenas presentes (não ausentes), apenas cadastrados
+  const base = flow.semTimes ? flow.presentes : flow.times.flat();
+  flow.statsOrder = base.filter(id => !flow.ausentes.includes(id) && appData.jogadores.find(x=>x.id===id));
   flow.statsData = {};
   flow.statsOrder.forEach(id => { flow.statsData[id] = {gols:0, assists:0, vitorias:0}; });
   flow.statsIdx = 0;
@@ -2798,12 +2889,15 @@ function confirmarAusentes() {
 function toggleP(id) {
   const i=flow.presentes.indexOf(id);
   if(i>=0) flow.presentes.splice(i,1);
-  else{if(flow.presentes.length>=20){showToast('Máximo 20');return;}flow.presentes.push(id);}
+  else { flow.presentes.push(id); }
   renderFlow();
 }
 function confirmarPresentes(){
-  const n = flow.presentes.length;
-  if(n!==10&&n!==15&&n!==20){showToast('Selecione 10, 15 ou 20 jogadores');return;}
+  // Conta só IDs que são jogadores cadastrados (evita IDs fantasmas da presença)
+  const validos = flow.presentes.filter(id => appData.jogadores.find(x=>x.id===id));
+  const n = validos.length;
+  if(n!==10&&n!==15&&n!==20){showToast('Selecione exatamente 10, 15 ou 20 jogadores para sortear');return;}
+  flow.presentes = validos;
   sortearTimes();
 }
 function sortearTimes() {
@@ -2984,6 +3078,7 @@ async function concluirPartidaHome() {
   if (!sorteio) return;
   // Load flow data from current sorteio to proceed to ausentes/stats
   const sorteioArr = timesToArr(sorteio.times, sorteio.timesCount);
+  const temTimes = sorteioArr.length > 0;
   flow = {
     step: 'ausentes',
     presentes: sorteioArr.flat(),
@@ -2992,7 +3087,9 @@ async function concluirPartidaHome() {
     ausentes: [],
     statsIdx: 0,
     statsOrder: [],
-    statsData: {}
+    statsData: {},
+    semTimes: !temTimes,
+    _saving: false
   };
   renderFlow();
   document.getElementById('flow').style.display = 'block';
@@ -3050,16 +3147,25 @@ function statsB(){flow.statsIdx--;renderFlow();}
 
 async function salvarStats() {
   const data = flow.data;
-  // When no teams (irregular list), use presentes directly
-  const todosNoSorteio = flow.semTimes ? flow.presentes : flow.times.flat();
+
+  // ── Quem joga: APENAS confirmados nos times (ou presentes sem times)
+  // NUNCA inclui jogadores da lista de espera
+  const jogadoresNoJogo = flow.semTimes
+    ? flow.presentes.filter(id => appData.jogadores.find(x=>x.id===id))
+    : flow.times.flat().filter(id => appData.jogadores.find(x=>x.id===id));
+
+  // Confirmados na lista de presença (para cruzamento de ausências)
+  const confirmadosNaPresenca = appData.presenca?.confirmados || [];
+
   const peladaJogadores = [];
 
-  for (const id of todosNoSorteio) {
+  for (const id of jogadoresNoJogo) {
     const j = appData.jogadores.find(x => x.id === id);
     if (!j) continue;
     if (!j.domingos) j.domingos = [];
     const ausente = flow.ausentes.includes(id);
     if (ausente) {
+      // Ausente: domingo registrado como ausência (não conta no ranking, mas conta como multa)
       j.domingos.push({ data, ausente: true, gols: 0, assists: 0, vitorias: 0 });
       peladaJogadores.push({ id, nome: j.nome, gols:0, assists:0, vitorias:0, scoreDia:0, ausente:true });
     } else {
@@ -3071,7 +3177,29 @@ async function salvarStats() {
     await firestoreSet('jogadores', id, j);
   }
 
-  // Rank presentes by scoreDia to get top-3 nominees for MVP vote
+  // ── Multas por ausência ──────────────────────────────────────
+  // Gera multa para quem estava CONFIRMADO na lista de presença mas faltou
+  // (tanto os marcados como ausentes no flow, quanto os confirmados que nem apareceram no flow)
+  const idsNoJogo = new Set(jogadoresNoJogo);
+  for (const id of confirmadosNaPresenca) {
+    // Se estava no jogo E foi marcado ausente → multa
+    // Se estava confirmado mas NEM estava no flow (não compareceu de forma alguma) → multa
+    const marcadoAusente = flow.ausentes.includes(id);
+    const naoApareceu = !idsNoJogo.has(id);
+    if (marcadoAusente || naoApareceu) {
+      const ehMens = jogadorMensalista(id);
+      const multaValor = ehMens ? getValores().multa : getValores().avulso;
+      const fin = getFinancasJogador(id);
+      const jaTemMulta = (fin.debitos||[]).some(d =>
+        d.tipo==='multa' && d.descricao?.includes('Faltou') && d.descricao?.includes(data)
+      );
+      if (!jaTemMulta) {
+        await adicionarDebito(id, 'multa', multaValor, `Faltou sem desmarcar — Pelada ${data}`);
+      }
+    }
+  }
+
+  // ── Ranking por score para MVP ────────────────────────────────
   const presentes = peladaJogadores.filter(j => !j.ausente)
     .sort((a,b) => {
       if (b.scoreDia !== a.scoreDia) return b.scoreDia - a.scoreDia;
@@ -3080,15 +3208,13 @@ async function salvarStats() {
       return b.vitorias - a.vitorias;
     });
 
-  // Top-3 with score > 0 become nominees (can be fewer if less than 3 scored)
   const nominees = presentes.filter(p => p.scoreDia > 0).slice(0, 3);
 
-  // Create pelada record (MVP will be filled after vote)
+  // ── Registro da pelada ────────────────────────────────────────
   const peladaId = 'pelada_' + Date.now();
-  const elapsesAt = Date.now() + 24 * 60 * 60 * 1000; // 24h from now
-  const elegiveisVotar = presentes.map(p => p.id); // only players who played can vote
+  const elapsesAt = Date.now() + 24 * 60 * 60 * 1000;
+  const elegiveisVotar = presentes.map(p => p.id); // só quem JOGOU pode votar
 
-  // Convert nested arrays to Firestore-compatible objects
   const timesObjRec = {};
   flow.times.forEach((t, i) => { timesObjRec['t' + i] = t; });
 
@@ -3101,48 +3227,32 @@ async function salvarStats() {
     mvp: null,
     podio: null,
     votacao: nominees.length > 0 ? {
-      status: 'aberta',        // 'aberta' | 'encerrada'
+      status: 'aberta',
       nominees: nominees.map(n => ({ id: n.id, nome: n.nome, scoreDia: n.scoreDia, gols: n.gols, assists: n.assists, vitorias: n.vitorias })),
-      votos: {},               // { jogadorId: nomineeId }
-      elegiveisVotar,          // ids who are allowed to vote
-      elapsesAt,               // timestamp 24h after save
+      votos: {},
+      elegiveisVotar,
+      elapsesAt,
     } : null
   };
 
-  // Save to Firebase ONLY — onSnapshot will update appData.peladasHist automatically
-  // Do NOT push locally here to avoid duplication when onSnapshot fires
   await firestoreSet('peladasHist', peladaId, peladaRec);
   if (!appData.peladasHist) appData.peladasHist = [];
-  // Only add locally if not already there (guard against double-call)
   if (!appData.peladasHist.find(x => x.id === peladaId)) {
     appData.peladasHist.push(peladaRec);
   }
 
-  // If no nominees (everyone scored 0), just save podium from score sort
   if (nominees.length === 0) {
     await finalizarVotacao(peladaId, peladaRec, true);
   }
 
-  // Check no-shows: confirmed but not in statsOrder (absent)
-  const presenca = appData.presenca;
-  if (presenca?.confirmados) {
-    for (const id of presenca.confirmados) {
-      const ausente = flow.ausentes.includes(id);
-      if (ausente) {
-        const multaNoShow = jogadorMensalista(id) ? getValores().multa : getValores().avulso;
-        await adicionarDebito(id, 'multa', multaNoShow, `Faltou sem desmarcar — Pelada ${data}`);
-      }
-    }
-  }
-  // Clear presença
+  // ── Limpar estado ─────────────────────────────────────────────
   await firestoreDelete('config', 'presenca');
   appData.presenca = null;
-
   await firestoreDelete('config', 'ultimoSorteio');
   appData.ultimoSorteio = null;
   saveLocal();
-  document.getElementById('flow').style.display = 'none';
 
+  document.getElementById('flow').style.display = 'none';
   if (nominees.length > 0) {
     showToast('📊 Estatísticas salvas! Votação MVP aberta por 24h ⭐');
   } else {
@@ -3150,6 +3260,7 @@ async function salvarStats() {
   }
   goTo('home');
 }
+
 
 // ─── VOTAÇÃO MVP ─────────────────────────────────────────────
 async function votarMvp(peladaId, nomineeId) {
@@ -3276,32 +3387,11 @@ function renderFinancas() {
   // Build financial status for each player
   // ── PAINEL DE CONFIGURAÇÃO (admin only) ──────────────────
   const valoresAtualCfg = `
-    <div class="card" style="border-color:var(--border-gold);margin-bottom:16px">
-      <div class="section-lbl" style="margin-bottom:10px">⚙️ VALORES (aplicados em novos débitos)</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <div class="field" style="margin:0">
-          <label style="font-size:10px">Mensalidade (R$)</label>
-          <input class="input" id="cfgMensal" type="number" min="0" step="1" value="${getValores().mensal}"
-            style="text-align:center;font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:700">
-        </div>
-        <div class="field" style="margin:0">
-          <label style="font-size:10px">Avulso (R$)</label>
-          <input class="input" id="cfgAvulso" type="number" min="0" step="1" value="${getValores().avulso}"
-            style="text-align:center;font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:700">
-        </div>
-        <div class="field" style="margin:0">
-          <label style="font-size:10px">Multa ausência (R$)</label>
-          <input class="input" id="cfgMulta" type="number" min="0" step="1" value="${getValores().multa}"
-            style="text-align:center;font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:700">
-        </div>
-        <div class="field" style="margin:0">
-          <label style="font-size:10px">Multa semanal (R$)</label>
-          <input class="input" id="cfgMultaSem" type="number" min="0" step="1" value="${getValores().multaSem}"
-            style="text-align:center;font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:700">
-        </div>
-      </div>
-      <button class="btn btn-gold" style="margin-top:12px;font-size:13px" onclick="salvarValores()">💾 SALVAR VALORES</button>
-      <div style="font-size:10px;color:var(--t3);margin-top:8px;text-align:center">Só afeta débitos criados após salvar</div>
+    <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
+      <button onclick="abrirConfigValores()" style="background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--t2);padding:6px 12px;cursor:pointer;display:flex;align-items:center;gap:6px;font-size:12px;font-family:'DM Sans',sans-serif" title="Configurar valores">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
+        Valores
+      </button>
     </div>`;
 
   const rows = jogadores.map(j => {
@@ -3613,6 +3703,48 @@ function getUltimo5du() {
   return new Date(anoHoje, mesHoje, dia5duAtual).toLocaleDateString('pt-BR');
 }
 
+function abrirConfigValores() {
+  if (!currentUser?.isAdmin) return;
+  const v = getValores();
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay open';
+  overlay.id = 'modalConfigValores';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="mhandle"></div>
+      <div class="m-title">⚙️ VALORES</div>
+      <div class="m-sub">Aplicados em novos débitos</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+        <div class="field" style="margin:0">
+          <label>Mensalidade (R$)</label>
+          <input class="input" id="cfgMensal" type="number" min="0" step="1" value="${v.mensal}"
+            style="text-align:center;font-size:20px;font-weight:700;font-family:'JetBrains Mono',monospace">
+        </div>
+        <div class="field" style="margin:0">
+          <label>Avulso (R$)</label>
+          <input class="input" id="cfgAvulso" type="number" min="0" step="1" value="${v.avulso}"
+            style="text-align:center;font-size:20px;font-weight:700;font-family:'JetBrains Mono',monospace">
+        </div>
+        <div class="field" style="margin:0">
+          <label>Multa ausência (R$)</label>
+          <input class="input" id="cfgMulta" type="number" min="0" step="1" value="${v.multa}"
+            style="text-align:center;font-size:20px;font-weight:700;font-family:'JetBrains Mono',monospace">
+        </div>
+        <div class="field" style="margin:0">
+          <label>Multa/semana (R$)</label>
+          <input class="input" id="cfgMultaSem" type="number" min="0" step="1" value="${v.multaSem}"
+            style="text-align:center;font-size:20px;font-weight:700;font-family:'JetBrains Mono',monospace">
+        </div>
+      </div>
+      <div style="font-size:10px;color:var(--t3);text-align:center;margin-bottom:12px">Só afeta débitos criados após salvar</div>
+      <button class="btn btn-gold" onclick="salvarValores()">💾 SALVAR</button>
+      <button class="btn btn-ghost mt8" onclick="document.getElementById('modalConfigValores').remove()">CANCELAR</button>
+    </div>`;
+  overlay.addEventListener('click', e => { if(e.target===overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+window.abrirConfigValores = abrirConfigValores;
+
 async function salvarValores() {
   if (!currentUser?.isAdmin) return;
   const mensal   = parseFloat(document.getElementById('cfgMensal')?.value);
@@ -3629,6 +3761,7 @@ async function salvarValores() {
   appData.config.valorMultaSem = multaSem;
   await firestoreSet('config', 'main', appData.config);
   saveLocal();
+  document.getElementById('modalConfigValores')?.remove();
   renderFinancas();
   showToast(`Valores salvos ✅ — Mensal R$${mensal} · Avulso R$${avulso} · Multa R$${multa}`);
 }
@@ -3798,15 +3931,14 @@ async function encerrarVotacaoForce(peladaId) {
 window.encerrarVotacaoForce = encerrarVotacaoForce;
 window.checkVotacoesExpiradas=checkVotacoesExpiradas;
 window.confirmarPresenca=confirmarPresenca;
-window.abrirAdminPresenca=abrirAdminPresenca;
-window.adminAdicionarPresenca=adminAdicionarPresenca;
-window.adminRemoverPresenca=adminRemoverPresenca;
-window.salvarInfoPelada=salvarInfoPelada;
-window.abrirAdminPresenca=abrirAdminPresenca;
-window.adminAdicionarPresenca=adminAdicionarPresenca;
-window.adminRemoverPresenca=adminRemoverPresenca;
-window.salvarInfoPelada=salvarInfoPelada;
 window.desmarcarPresenca=desmarcarPresenca;
+window.abrirAdminPresenca=abrirAdminPresenca;
+window.adminAdicionarPresenca=adminAdicionarPresenca;
+window.adminRemoverPresenca=adminRemoverPresenca;
+window.salvarInfoPelada=salvarInfoPelada;
+window.adminBaixaAvulsoPresenca=adminBaixaAvulsoPresenca;
+window.gerarDebitoAvulsoPresenca=gerarDebitoAvulsoPresenca;
+window.gerarMultasAusencia=gerarMultasAusencia;
 window.abrirDarBaixa=abrirDarBaixa;
 window.executarBaixa=executarBaixa;
 window.abrirAddDebito=abrirAddDebito;
