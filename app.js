@@ -2494,20 +2494,37 @@ async function confirmarDataSorteio() {
   closeModal('modalDataSorteio');
 
   const confirmados = appData.presenca?.confirmados || [];
+  const temPresenca = confirmados.length > 0;
 
-  // Always open sel screen pre-populated with confirmados
-  // Admin can add/remove before sorting
-  flow={
-    step: 'sel',
-    presentes: [...confirmados],
-    times:[], data,
+  appData.restricoes = appData.restricoes.filter(r=>r.duracao!=='domingo');
+  flow = {
+    step: 'sel', presentes: [], times:[], data,
     ausentes:[], statsIdx:0, statsOrder:[], statsData:{}, _saving:false
   };
 
-  appData.restricoes = appData.restricoes.filter(r=>r.duracao!=='domingo');
-  saveLocal();
-  renderFlow();
-  document.getElementById('flow').style.display='block';
+  if (temPresenca) {
+    // HAS presença list — use it directly, skip manual selection
+    flow.presentes = [...confirmados];
+    const n = confirmados.length;
+    if (n === 15 || n === 20) {
+      // Perfect number → sort teams immediately
+      flow.step = 'sel'; // sortearTimes will change to 'times'
+      saveLocal();
+      sortearTimes();
+    } else {
+      // Wrong number → show lista screen (can mark absentes before stats)
+      flow.step = 'lista';
+      saveLocal();
+      renderFlow();
+    }
+  } else {
+    // NO presença list → manual selection
+    flow.step = 'sel';
+    saveLocal();
+    renderFlow();
+  }
+
+  document.getElementById('flow').style.display = 'block';
 }
 function closeFlow() {
   if (flow.step === 'times') {
@@ -2569,20 +2586,23 @@ function confirmarListaSemTimes() {
 function renderFlowSel(c,t) {
   t.textContent='SELECIONAR PRESENTES';
   const sel=flow.presentes, n=sel.length;
-  const valid=n===15||n===20;
-  const nTimes = n===15?3:n===20?4:null;
+  const validSortear = n===10||n===15||n===20;
+  const validSemTimes = n>0 && !validSortear;
+  const nTimes = n===10?2:n===15?3:n===20?4:null;
 
   // Status line
-  let hint, btnStyle='', btnLabel=`SORTEAR TIMES (${n})`;
-  if (n===15||n===20) {
-    hint=`<span style="color:#22c55e">✓ ${n} jogadores → ${nTimes} times</span>`;
-    btnStyle='';
-  } else if (n<15) {
-    hint=`Selecione <strong style="color:var(--gold)">15</strong> ou <strong style="color:var(--gold)">20</strong> · faltam ${15-n}`;
-  } else if (n>15&&n<20) {
-    hint=`<span style="color:#eab308">${n} selecionados — ajuste para 15 ou 20</span>`;
+  let hint;
+  if (n===10) {
+    hint=`<span style="color:#22c55e">✓ ${n} jogadores → 2 times</span>`;
+  } else if (n===15) {
+    hint=`<span style="color:#22c55e">✓ ${n} jogadores → 3 times</span>`;
+  } else if (n===20) {
+    hint=`<span style="color:#22c55e">✓ ${n} jogadores → 4 times</span>`;
+  } else if (n===0) {
+    hint=`Selecione os jogadores presentes`;
   } else {
-    hint=`<span style="color:#ef4444">${n} selecionados — máximo 20</span>`;
+    const proxSortear = n<10?10:n<15?15:n<20?20:null;
+    hint=`<span style="color:#eab308">${n} selecionados${proxSortear?` · faltam ${proxSortear-n} para sortear`:' · máx 20'}</span>`;
   }
 
   // Show confirmed from presença at top if any
@@ -2614,26 +2634,20 @@ function renderFlowSel(c,t) {
       </div>`;
     }).join('')}
     <div style="margin-top:14px;display:flex;gap:8px;flex-direction:column">
-      <button class="btn btn-gold" ${valid?'':'disabled'} onclick="confirmarPresentes()">${btnLabel}</button>
-      ${!valid && n>=15 ? `<button class="btn btn-ghost" onclick="ajustarParaProximo()">AJUSTAR PARA ${n<18?15:20} JOGADORES</button>` : ''}
+      <button class="btn btn-gold" ${validSortear?'':'disabled'} onclick="confirmarPresentes()">
+        ⚽ SORTEAR TIMES ${n>0?'('+n+')':''}
+      </button>
+      <button class="btn btn-ghost" ${validSemTimes&&!validSortear?'':'disabled'} onclick="irParaListaSemTimes()"
+        style="${validSemTimes&&!validSortear?'':'opacity:0.4;cursor:not-allowed'}">
+        📋 REGISTRAR SEM TIMES ${n>0?'('+n+')':''}
+      </button>
     </div>`;
 }
 
-function ajustarParaProximo() {
-  const n = flow.presentes.length;
-  const alvo = n < 18 ? 15 : 20;
-  // Remove last ones added (non-confirmed from presença first) until alvo
-  const confirmadosPres = appData.presenca?.confirmados || [];
-  // Sort: remove non-confirmed first
-  while (flow.presentes.length > alvo) {
-    const naoConf = flow.presentes.find(id => !confirmadosPres.includes(id));
-    if (naoConf) {
-      flow.presentes = flow.presentes.filter(x => x !== naoConf);
-    } else {
-      // All are confirmed — remove last
-      flow.presentes.pop();
-    }
-  }
+function irParaListaSemTimes() {
+  if (flow.presentes.length === 0) { showToast('Selecione pelo menos 1 jogador'); return; }
+  flow.step = 'lista';
+  flow.ausentes = [];
   renderFlow();
 }
 
@@ -3602,7 +3616,7 @@ window.toggleAdmin=toggleAdmin;
 window.toggleP=toggleP;
 window.toggleAusente=toggleAusente;
 window.confirmarPresentes=confirmarPresentes;
-window.ajustarParaProximo=ajustarParaProximo;
+window.irParaListaSemTimes=irParaListaSemTimes;
 window.confirmarListaSemTimes=confirmarListaSemTimes;
 window.confirmarAusentes=confirmarAusentes;
 window.resortear=resortear;
