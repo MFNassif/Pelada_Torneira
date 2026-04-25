@@ -10,8 +10,6 @@ import {
 
 // ─── CONSTANTS ───────────────────────────────────────────────
 const K_SHRINKAGE = 5;
-const ALPHA_MAX   = 0.7710;
-const ALPHA_K     = 0.2860;
 const W_VIT       = 0.75;
 const LS_CONFIG   = 'pelada_fb_config';
 const LS_USER     = 'pelada_user';
@@ -134,21 +132,39 @@ function voltarLogin() {
   `;
 }
 
+function hashSenha(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = Math.imul(31, h) + s.charCodeAt(i) | 0;
+  return 'h' + Math.abs(h).toString(36);
+}
+
 async function confirmarSenha(jogadorId, modo) {
-  const senha = document.getElementById('inputSenha')?.value;
+  const inp = document.getElementById('inputSenha');
+  const senha = inp?.value?.trim();
   if (!senha || senha.length < 4) { showToast('Senha deve ter pelo menos 4 caracteres'); return; }
 
+  // Re-load from appData to get latest
   const j = appData.jogadores.find(x => x.id === jogadorId);
-  if (!j) return;
+  if (!j) { showToast('Jogador não encontrado'); return; }
 
   if (modo === 'criar') {
-    const senha2 = document.getElementById('inputSenha2')?.value;
+    const senha2 = document.getElementById('inputSenha2')?.value?.trim();
     if (senha !== senha2) { showToast('Senhas não coincidem'); return; }
-    j.senha = btoa(senha);
+    j.senha = hashSenha(senha);
     await firestoreSet('jogadores', jogadorId, j);
     saveLocal();
+    showToast('Senha criada! ✅');
   } else {
-    if (btoa(senha) !== j.senha) { showToast('Senha incorreta'); return; }
+    const hash = hashSenha(senha);
+    // Accept both new hash and old btoa (migration)
+    let ok = hash === j.senha;
+    if (!ok) { try { ok = btoa(unescape(encodeURIComponent(senha))) === j.senha; } catch(e) {} }
+    if (!ok) {
+      showToast('Senha incorreta ❌');
+      inp.value = ''; inp.focus(); return;
+    }
+    // Migrate to new hash
+    if (j.senha !== hash) { j.senha = hash; await firestoreSet('jogadores', jogadorId, j); saveLocal(); }
   }
 
   const isAdmin = (appData.admins || []).includes(j.id);
@@ -240,11 +256,21 @@ function medioGrupo(jogs) {
   if(!a.length) return 0;
   return +(a.reduce((s,j)=>s+scoreAcum(j),0)/a.length).toFixed(4);
 }
+function nDomAtivo(j) { return (j.domingos||[]).filter(d=>!d.ausente).length; }
 function scoreAdj(j,med) {
-  const n=nDom(j);
+  const n=nDomAtivo(j);  // only active days count for confidence
   return +((n*scoreAcum(j)+K_SHRINKAGE*med)/(n+K_SHRINKAGE)).toFixed(4);
 }
-function alpha(n) { return +(ALPHA_MAX/(1+ALPHA_K*n)).toFixed(4); }
+function alpha(n) {
+  // Weight table: domingo 0→1, 1→10, 2→20, 3→25, 4→35, 5→40,
+  // 6→45, 7→50, then linear to 75% at domingo 20, capped at 75%
+  const table = [1, 10, 20, 25, 35, 40, 45, 50];
+  if (n < table.length) return +(table[n] / 100).toFixed(4);
+  // Linear interpolation from 50% at n=7 to 75% at n=20
+  if (n >= 20) return 0.75;
+  const pct = 50 + (n - 7) * (25 / 13);
+  return +(Math.min(pct, 75) / 100).toFixed(4);
+}
 function normGroup(vals) {
   const mn=Math.min(...vals),mx=Math.max(...vals);
   if(mx===mn) return vals.map(()=>0.5);
@@ -257,9 +283,9 @@ function calcIdx(jogs) {
   const notas=jogs.map(j=>+(j.nota||5).toFixed(1));
   const adjN=normGroup(adjs), notN=normGroup(notas);
   return jogs.map((j,i)=>{
-    const n=nDom(j),a=alpha(n);
+    const n=nDomAtivo(j),a=alpha(n);
     const IF=+(a*notN[i]+(1-a)*adjN[i]).toFixed(4);
-    return {id:j.id,nome:j.nome,nota:notas[i],notaN:notN[i],sAdj:adjs[i],sAdjN:adjN[i],alpha:a,IF,n};
+    return {id:j.id,nome:j.nome,nota:notas[i],notaN:notN[i],sAdj:adjs[i],sAdjN:adjN[i],alpha:a,IF,n,nTotal:nDom(j)};
   });
 }
 
@@ -352,8 +378,9 @@ function renderHome() {
 
     if (adminControls && isAdmin && sorteio.status === 'confirmado') {
       adminControls.innerHTML = `
-        <div style="display:flex;gap:8px;margin-top:12px">
-          <button class="btn btn-danger" style="flex:1" onclick="cancelarPartidaHome()">❌ CANCELAR</button>
+        <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+          <button class="btn btn-ghost" style="flex:1;min-width:120px" onclick="abrirEdicaoTimes()">✏️ EDITAR TIMES</button>
+          <button class="btn btn-danger" style="flex:1;min-width:120px" onclick="cancelarPartidaHome()">❌ CANCELAR</button>
           <button class="btn btn-gold" style="flex:1" onclick="concluirPartidaHome()">🏁 CONCLUIR</button>
         </div>`;
     } else if (adminControls) {
@@ -616,8 +643,16 @@ async function removerJog(id) {
   const j=appData.jogadores.find(x=>x.id===id);
   if(!confirm(`Remover ${j?.nome}? Todos os dados serão perdidos.`)) return;
   appData.jogadores=appData.jogadores.filter(x=>x.id!==id);
+  // Remove restricoes involving this player from Firestore too
+  const restParaRemover = appData.restricoes.filter(r=>r.p1===id||r.p2===id);
   appData.restricoes=appData.restricoes.filter(r=>r.p1!==id&&r.p2!==id);
   await firestoreDelete('jogadores',id);
+  await Promise.all(restParaRemover.map(r=>firestoreDelete('restricoes',r.id)));
+  // Also remove from admins if applicable
+  if ((appData.admins||[]).includes(id)) {
+    appData.admins = appData.admins.filter(a=>a!==id);
+    await firestoreSet('config','admins',{list:appData.admins});
+  }
   saveLocal(); renderJogs(); showToast('Jogador removido');
 }
 
@@ -780,7 +815,87 @@ function openPerfil(id) {
     ${histHTML}`;
   openModal('modalPerfil');
 }
-function openPerfilProprio() { if(currentUser) openPerfil(currentUser.id); }
+function openPerfilProprio() {
+  if (!currentUser) return;
+  // Toggle floating menu
+  const existing = document.getElementById('userFloatMenu');
+  if (existing) { existing.remove(); return; }
+  const chip = document.getElementById('hUserChip');
+  const rect = chip.getBoundingClientRect();
+  const menu = document.createElement('div');
+  menu.id = 'userFloatMenu';
+  menu.style.cssText = `position:fixed;top:${rect.bottom+6}px;right:12px;background:var(--s1);border:1px solid var(--border-gold);border-radius:12px;padding:8px;z-index:300;min-width:180px;box-shadow:0 8px 32px rgba(0,0,0,.5)`;
+  menu.innerHTML = `
+    <div style="padding:8px 10px 10px;border-bottom:1px solid var(--border);margin-bottom:6px">
+      <div style="font-family:'Oswald',sans-serif;font-size:14px;color:var(--gold-lt)">${currentUser.nome}</div>
+      <div style="font-size:10px;color:var(--t2);margin-top:2px">${currentUser.isAdmin?'Admin':'Jogador'}</div>
+    </div>
+    <button onclick="document.getElementById('userFloatMenu')?.remove();openPerfil('${currentUser.id}')" style="width:100%;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 10px;text-align:left;cursor:pointer;border-radius:8px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background='var(--s2)'" onmouseout="this.style.background='none'">👤 Ver perfil</button>
+    ${!currentUser.isGuest ? `
+    <button onclick="document.getElementById('userFloatMenu')?.remove();abrirUploadFoto('${currentUser.id}')" style="width:100%;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 10px;text-align:left;cursor:pointer;border-radius:8px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background='var(--s2)'" onmouseout="this.style.background='none'">📷 Alterar foto</button>
+    <button onclick="document.getElementById('userFloatMenu')?.remove();abrirMudarSenha()" style="width:100%;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 10px;text-align:left;cursor:pointer;border-radius:8px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background='var(--s2)'" onmouseout="this.style.background='none'">🔑 Mudar senha</button>` : ''}
+    <div style="border-top:1px solid var(--border);margin:6px 0"></div>
+    <button onclick="document.getElementById('userFloatMenu')?.remove();sairDaConta()" style="width:100%;background:none;border:none;color:var(--red);font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 10px;text-align:left;cursor:pointer;border-radius:8px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background='rgba(255,68,68,.08)'" onmouseout="this.style.background='none'">🚪 Sair da conta</button>
+  `;
+  document.body.appendChild(menu);
+  // Close on outside click
+  setTimeout(() => {
+    document.addEventListener('click', function handler(e) {
+      if (!menu.contains(e.target) && !chip.contains(e.target)) {
+        menu.remove(); document.removeEventListener('click', handler);
+      }
+    });
+  }, 10);
+}
+
+function abrirMudarSenha() {
+  if (!currentUser || currentUser.isGuest) { showToast('Faça login com sua conta'); return; }
+  const j = appData.jogadores.find(x => x.id === currentUser.id);
+  if (!j) { showToast('Jogador não encontrado'); return; }
+  // Reuse showPasswordStep in 'mudar' mode
+  showPasswordStepMudar(j);
+}
+
+function showPasswordStepMudar(jogador) {
+  // Open a simple modal
+  const overlay = document.createElement('div');
+  overlay.id = 'modalMudarSenha';
+  overlay.className = 'overlay open';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="mhandle"></div>
+      <div class="m-title">MUDAR SENHA</div>
+      <div class="m-sub">${jogador.nome}</div>
+      <div class="field"><label>Senha atual</label><input class="input" id="msSenhaAtual" type="password" placeholder="••••••" maxlength="30"></div>
+      <div class="field"><label>Nova senha</label><input class="input" id="msSenhaNova" type="password" placeholder="••••••" maxlength="30"></div>
+      <div class="field"><label>Confirmar nova senha</label><input class="input" id="msSenhaNova2" type="password" placeholder="••••••" maxlength="30"></div>
+      <button class="btn btn-gold" onclick="salvarNovaSenha('${jogador.id}')">SALVAR SENHA</button>
+      <button class="btn btn-ghost mt8" onclick="document.getElementById('modalMudarSenha').remove()">CANCELAR</button>
+    </div>`;
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+
+async function salvarNovaSenha(jogadorId) {
+  const atual = document.getElementById('msSenhaAtual')?.value?.trim();
+  const nova = document.getElementById('msSenhaNova')?.value?.trim();
+  const nova2 = document.getElementById('msSenhaNova2')?.value?.trim();
+  if (!atual || !nova || !nova2) { showToast('Preencha todos os campos'); return; }
+  if (nova.length < 4) { showToast('Nova senha deve ter pelo menos 4 caracteres'); return; }
+  if (nova !== nova2) { showToast('Senhas não coincidem'); return; }
+  const j = appData.jogadores.find(x => x.id === jogadorId);
+  if (!j) return;
+  // Verify current
+  const hashAtual = hashSenha(atual);
+  let ok = hashAtual === j.senha;
+  if (!ok) { try { ok = btoa(unescape(encodeURIComponent(atual))) === j.senha; } catch(e) {} }
+  if (!ok) { showToast('Senha atual incorreta ❌'); return; }
+  j.senha = hashSenha(nova);
+  await firestoreSet('jogadores', jogadorId, j);
+  saveLocal();
+  document.getElementById('modalMudarSenha')?.remove();
+  showToast('Senha alterada! ✅');
+}
 
 // ─── EDITAR / ADICIONAR DOMINGO ──────────────────────────────
 let _editDomingo = { jogadorId: null, idx: null };
@@ -1158,9 +1273,14 @@ function sortearTimes() {
   const nT=flow.presentes.length===15?3:4;
   const idxMap=Object.fromEntries(calcIdx(appData.jogadores).map(i=>[i.id,i]));
   const alea=(appData.config?.aleatoriedade??15)/100;
+  const scores=flow.presentes.map(id=>idxMap[id]?.IF||0);
+  const maxScore=Math.max(...scores);
+  const noiseBase = maxScore > 0 ? maxScore : 0.5; // guarantee noise when all scores=0
   const scored=flow.presentes.map(id=>{
     const base=idxMap[id]?.IF||0;
-    return{id,score:base+base*alea*(Math.random()*2-1)};
+    const noise=noiseBase*alea*(Math.random()*2-1);
+    const minNoise=noiseBase*0.05*(Math.random()*2-1); // always some shuffle
+    return{id,score:base+noise+minNoise};
   }).sort((a,b)=>b.score-a.score);
   const times=Array.from({length:nT},()=>[]);
   for(let i=0;i<scored.length;i++){
@@ -1197,7 +1317,6 @@ function cancelarSorteio() {
 }
 
 async function confirmarTimes(){
-  // Save to Firebase so all users see the teams
   const timesData = {
     times: flow.times,
     data: flow.data,
@@ -1208,13 +1327,82 @@ async function confirmarTimes(){
       return j?.nome || id;
     }))
   };
-  await firestoreSet('config', 'ultimoSorteio', timesData);
-  appData.ultimoSorteio = timesData;
+  try {
+    await firestoreSet('config', 'ultimoSorteio', timesData);
+    appData.ultimoSorteio = timesData;
+    saveLocal();
+    document.getElementById('flow').style.display='none';
+    goTo('home');
+    showToast('Times confirmados! ✅ Todos podem ver.');
+  } catch(e) {
+    console.error('Erro ao confirmar times:', e);
+    showToast('Erro ao salvar. Tente novamente.');
+  }
+}
+
+// ─── EDIÇÃO MANUAL DE TIMES ──────────────────────────────────
+let editTimesState = null;
+
+function abrirEdicaoTimes() {
+  if (!currentUser?.isAdmin) return;
+  const sorteio = appData.ultimoSorteio;
+  if (!sorteio) return;
+  // Deep copy times
+  editTimesState = sorteio.times.map(t => [...t]);
+  renderEdicaoTimes();
+  openModal('modalEditTimes');
+}
+
+function renderEdicaoTimes() {
+  const cont = document.getElementById('editTimesContent');
+  if (!cont) return;
+  const nT = editTimesState.length;
+  const dotColors = ['#22c55e','#eab308','#3b82f6','#ef4444'];
+  cont.innerHTML = editTimesState.map((tm, ti) => `
+    <div class="card" style="margin-bottom:10px;border-color:var(--border-gold)">
+      <div class="t-name" style="font-size:13px;margin-bottom:8px"><div style="width:8px;height:8px;border-radius:50%;background:${dotColors[ti]};flex-shrink:0;display:inline-block;margin-right:6px"></div>Time ${ti+1}</div>
+      ${tm.map((id, pi) => {
+        const j = appData.jogadores.find(x=>x.id===id);
+        const opts = appData.ultimoSorteio.times.flat().map(pid => {
+          const pj = appData.jogadores.find(x=>x.id===pid);
+          return `<option value="${pid}" ${pid===id?'selected':''}>${pj?.nome||pid}</option>`;
+        }).join('');
+        return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <select class="input" style="flex:1;padding:6px 10px;font-size:12px" onchange="moverJogador(${ti},${pi},this.value)">
+            ${opts}
+          </select>
+        </div>`;
+      }).join('')}
+    </div>`).join('');
+}
+
+function moverJogador(timeIdx, posIdx, novoId) {
+  // Swap: find where novoId currently is and swap
+  const antigoId = editTimesState[timeIdx][posIdx];
+  if (antigoId === novoId) return;
+  let found = false;
+  for (let t = 0; t < editTimesState.length; t++) {
+    const p = editTimesState[t].indexOf(novoId);
+    if (p >= 0) { editTimesState[t][p] = antigoId; found = true; break; }
+  }
+  editTimesState[timeIdx][posIdx] = novoId;
+  renderEdicaoTimes();
+}
+
+async function salvarEdicaoTimes() {
+  if (!currentUser?.isAdmin) return;
+  const sorteio = appData.ultimoSorteio;
+  sorteio.times = editTimesState;
+  sorteio.nomes = editTimesState.map(t => t.map(id => {
+    const j = appData.jogadores.find(x=>x.id===id);
+    return j?.nome || id;
+  }));
+  await firestoreSet('config', 'ultimoSorteio', sorteio);
+  appData.ultimoSorteio = sorteio;
   saveLocal();
-  // Close flow and go back to home — home will show times + admin controls
-  document.getElementById('flow').style.display='none';
-  goTo('home');
-  showToast('Times confirmados! ✅ Todos podem ver.');
+  closeModal('modalEditTimes');
+  renderHome();
+  showToast('Times atualizados! ✅');
 }
 
 // ─── HOME admin actions (cancelar / concluir) ─────────────────
@@ -1552,3 +1740,8 @@ window.setRankDir=setRankDir;
 window.confirmarDataSorteio=confirmarDataSorteio;
 window.votarMvp=votarMvp;
 window.checkVotacoesExpiradas=checkVotacoesExpiradas;
+window.abrirEdicaoTimes=abrirEdicaoTimes;
+window.moverJogador=moverJogador;
+window.salvarEdicaoTimes=salvarEdicaoTimes;
+window.abrirMudarSenha=abrirMudarSenha;
+window.salvarNovaSenha=salvarNovaSenha;
