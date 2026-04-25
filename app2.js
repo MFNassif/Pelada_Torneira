@@ -417,22 +417,22 @@ function semanasAtraso5du() {
 
 function totalDebitoJogador(jogadorId) {
   const fin = getFinancasJogador(jogadorId);
-  const total = (fin.debitos||[]).reduce((s,d) => s + (d.valor||0), 0);
+  const debitos = (fin.debitos||[]).filter(d => !d.quitado); // só ativos
+  const total = debitos.reduce((s,d) => s + (d.valor||0), 0);
   const pago = (fin.pagamentos||[]).reduce((s,p) => s + (p.valor||0), 0);
-  let saldo = Math.max(0, total - pago); // never show negative balance
-  // Add automatic weekly late fee for mensalistas with unpaid mensal debts
+  let saldo = Math.max(0, total - pago);
+  // Multa semanal automática para mensalistas em atraso
   if (jogadorMensalista(jogadorId)) {
     const semanas = semanasAtraso5du();
     if (semanas > 0) {
-      // Check if there are any unpaid mensal debts (saldo from mensais > 0)
-      const saldoMensais = (fin.debitos||[])
+      const saldoMensais = debitos
         .filter(d => d.tipo === 'mensal')
         .reduce((s,d) => s + (d.valor||0), 0);
       const pagoMensais = (fin.pagamentos||[])
         .filter(p => p.descricao?.toLowerCase().includes('mensalidade'))
         .reduce((s,p) => s + (p.valor||0), 0);
       if (saldoMensais > pagoMensais) {
-        saldo += semanas * getValores().multaSem; // R$x/week auto-applied
+        saldo += semanas * getValores().multaSem;
       }
     }
   }
@@ -441,9 +441,9 @@ function totalDebitoJogador(jogadorId) {
 
 function saldoDebitosPorTipo(jogadorId) {
   // Returns { multas, mensais, avulsos, outros, totalPago }
-  // so callers can decide what counts as "blocking"
+  // Exclui débitos marcados como quitado:true (cancelados individualmente)
   const fin = getFinancasJogador(jogadorId);
-  const debitos = fin.debitos || [];
+  const debitos = (fin.debitos || []).filter(d => !d.quitado); // só débitos ativos
   const pagamentos = fin.pagamentos || [];
   const totalPago = pagamentos.reduce((s,p) => s + (p.valor||0), 0);
 
@@ -1848,12 +1848,25 @@ window.openPeladaDetalheByData = openPeladaDetalheByData;
 async function excluirPeladaPorData(data) {
   if (!currentUser?.isAdmin) return;
   const jogadoresComData = appData.jogadores.filter(j => (j.domingos||[]).some(d => d.data === data));
-  if (!confirm(`Excluir pelada de ${data}? Remove estatísticas de ${jogadoresComData.length} jogadores.`)) return;
+  if (!confirm(`Excluir pelada de ${data}? Remove estatísticas e débitos de ${jogadoresComData.length} jogadores.`)) return;
   if (!confirm('Tem certeza? Esta ação não pode ser desfeita.')) return;
+
   for (const j of jogadoresComData) {
+    // Remove domingo
     j.domingos = (j.domingos||[]).filter(d => d.data !== data);
     await firestoreSet('jogadores', j.id, j);
+
+    // Remove débitos gerados por esta pelada (avulso + multa de ausência)
+    const fin = getFinancasJogador(j.id);
+    const antes = (fin.debitos||[]).length;
+    fin.debitos = (fin.debitos||[]).filter(d =>
+      !(d.descricao?.includes(data) && (d.tipo === 'avulso' || d.tipo === 'multa'))
+    );
+    if (fin.debitos.length !== antes) {
+      await firestoreSet('financas', j.id, fin);
+    }
   }
+
   closeModal('modalPeladaDetalhe');
   renderPeladasHistorico();
   showToast(`Pelada de ${data} excluída`);
@@ -1865,20 +1878,32 @@ async function excluirPelada(peladaId) {
   if (!currentUser?.isAdmin) return;
   const p = (appData.peladasHist||[]).find(x=>x.id===peladaId);
   if (!p) return;
-  if (!confirm(`Excluir pelada de ${p.data}? As estatísticas dos jogadores serão removidas.`)) return;
+  if (!confirm(`Excluir pelada de ${p.data}? As estatísticas e débitos dos jogadores serão removidos.`)) return;
   if (!confirm('Tem certeza? Esta ação não pode ser desfeita.')) return;
 
-  // Remove stats from each player
+  const data = p.data;
+
+  // Remove stats e débitos de cada jogador da pelada
   for (const jp of (p.jogadores||[])) {
     const j = appData.jogadores.find(x=>x.id===jp.id);
     if (!j) continue;
-    // Remove the domingo entry matching this pelada's date
+
+    // Remove domingo
     const before = j.domingos?.length || 0;
-    j.domingos = (j.domingos||[]).filter(d => d.data !== p.data);
-    // Also remove mvp flag if this was the MVP pelada
+    j.domingos = (j.domingos||[]).filter(d => d.data !== data);
     if (p.mvp?.id === j.id && j.mvps > 0) j.mvps--;
     if (j.domingos.length !== before) {
       await firestoreSet('jogadores', j.id, j);
+    }
+
+    // Remove débitos gerados por esta pelada (avulso + multa de ausência)
+    const fin = getFinancasJogador(jp.id);
+    const antes = (fin.debitos||[]).length;
+    fin.debitos = (fin.debitos||[]).filter(d =>
+      !(d.descricao?.includes(data) && (d.tipo === 'avulso' || d.tipo === 'multa'))
+    );
+    if (fin.debitos.length !== antes) {
+      await firestoreSet('financas', jp.id, fin);
     }
   }
 
@@ -1888,7 +1913,7 @@ async function excluirPelada(peladaId) {
   saveLocal();
   closeModal('modalPeladaDetalhe');
   renderPeladasHistorico();
-  showToast('Pelada excluída e estatísticas removidas');
+  showToast('Pelada excluída — estatísticas e débitos removidos');
 }
 window.excluirPelada = excluirPelada;
 
