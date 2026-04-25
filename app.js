@@ -722,6 +722,17 @@ async function confirmReset() {
   saveLocal();renderHome();showToast('Dados resetados');
 }
 
+// ─── LOGOUT ──────────────────────────────────────────────────
+function sairDaConta() {
+  if (!confirm('Sair da conta?')) return;
+  localStorage.removeItem(LS_USER);
+  currentUser = null;
+  document.getElementById('appShell').style.display = 'none';
+  showLogin(true);
+  document.getElementById('loginNome').value = '';
+}
+window.sairDaConta = sairDaConta;
+
 // ─── TOAST ───────────────────────────────────────────────────
 function showToast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);}
 
