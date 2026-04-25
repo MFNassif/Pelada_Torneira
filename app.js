@@ -286,7 +286,10 @@ function subscribeRT() {
   });
   onSnapshot(collection(db_fire,'peladasHist'), snap => {
     appData.peladasHist = snap.docs.map(d=>d.data());
-    if (curScreen === 'home') renderPeladasHistorico();
+    if (curScreen === 'home') {
+      renderPeladasHistorico();
+      renderPresenca(); // refresh in case votação just closed
+    }
   });
   onSnapshot(doc(db_fire,'config','presenca'), snap => {
     appData.presenca = snap.exists() ? snap.data() : null;
@@ -818,57 +821,74 @@ const REGRAS_PELADA = `• 1ª partida: 10 min, sem limite de gol (2 primeiros t
 function renderPresenca() {
   const cont = document.getElementById('homePresenca');
   if (!cont) return;
+  const isAdminUser = currentUser?.isAdmin;
+
+  // ── STATE MACHINE ─────────────────────────────────────────
+  // 1. Times sorteados e confirmados → esconde lista (mostra times na home)
+  // 2. Votação MVP aberta → mostra "aguardando MVP"
+  // 3. Qualquer outro caso → mostra lista de presença
+
   const sorteio = appData.ultimoSorteio;
-  // Presença aparece após resultado MVP da última pelada (ou se nunca houve pelada)
-  const peladas = appData.peladasHist || [];
-  const ultimaPelada = peladas.length > 0 ? [...peladas].sort((a,b)=>(b.savedAt||0)-(a.savedAt||0))[0] : null;
-  const votacaoAberta = ultimaPelada?.votacao?.status === 'aberta';
-  // Hide presença when times already sorted (sorteio active)
-  if (sorteio && sorteio.times && timesToArr(sorteio.times, sorteio.timesCount).length > 0) {
-    cont.innerHTML = ''; return;
+  const timesAtivos = sorteio && sorteio.status === 'confirmado'
+    && timesToArr(sorteio.times, sorteio.timesCount).length > 0;
+
+  if (timesAtivos) {
+    cont.innerHTML = ''; return; // times visíveis na home, oculta lista
   }
+
+  const peladas = appData.peladasHist || [];
+  const ultimaPelada = peladas.length > 0
+    ? [...peladas].sort((a,b)=>(b.savedAt||0)-(a.savedAt||0))[0]
+    : null;
+  const votacaoAberta = ultimaPelada?.votacao?.status === 'aberta';
+
   if (votacaoAberta) {
     cont.innerHTML = `
       <div class="section-lbl" style="margin-top:16px">LISTA DE PRESENÇA</div>
       <div class="card" style="text-align:center;padding:20px;border-color:rgba(234,179,8,.2);background:rgba(234,179,8,.04)">
         <div style="font-size:24px;margin-bottom:8px">⏳</div>
         <div style="font-family:'Oswald',sans-serif;font-size:14px;letter-spacing:1px;color:var(--gold-lt)">AGUARDANDO RESULTADO MVP</div>
-        <div style="font-size:11px;color:var(--t2);margin-top:6px">A lista de presença será liberada após a votação ser concluída</div>
+        <div style="font-size:11px;color:var(--t2);margin-top:6px">A lista será liberada após a votação ser concluída</div>
+        ${isAdminUser ? `<button onclick="encerrarVotacaoForce('${ultimaPelada.id}')" style="margin-top:12px;background:rgba(234,179,8,.15);border:1px solid rgba(234,179,8,.3);border-radius:8px;color:#eab308;font-size:12px;padding:6px 16px;cursor:pointer;font-family:'Oswald',sans-serif;letter-spacing:1px">⚡ ENCERRAR VOTAÇÃO AGORA</button>` : ''}
       </div>`;
     return;
   }
 
-  const presenca = appData.presenca || { confirmados: [], espera: [], data: sorteio.data };
+  // ── LISTA ABERTA ──────────────────────────────────────────
+  // presença.data pode vir da própria presença ou do sorteio
+  const presenca = appData.presenca || { confirmados: [], espera: [], data: '' };
+  const dataLista = presenca.data || sorteio?.data || '';
   const confirmados = presenca.confirmados || [];
   const espera = presenca.espera || [];
   const total = confirmados.length;
   const vagas = total >= 20 ? 20 : 15;
-  const vagasEspera = 5;
   const horario = total >= 20 ? '11:30 às 13:30' : '11:30 às 13:00';
 
+  // Priority window
   const now = Date.now();
-  const peladaDate = parsePeladaDate(sorteio.data);
+  const peladaDate = parsePeladaDate(dataLista);
   const h24 = 24 * 60 * 60 * 1000;
   const dentro24h = peladaDate && (peladaDate - now) < h24;
-  // Mensalista priority until Friday 12h before sunday pelada
-  const sexta12h = peladaDate ? (peladaDate - (2*24*60*60*1000) + (12*60*60*1000) - (11.5*60*60*1000)) : null;
-  // simpler: priority period ends Friday 12:00 = sunday 11:30 - ~47.5h
-  const fimPrioridadeMensalista = peladaDate ? peladaDate - (47.5 * 60*60*1000) : null;
-  const dentroPrioridade = fimPrioridadeMensalista && now < fimPrioridadeMensalista;
-  const aposJanelaMensalista = !dentroPrioridade; // avulsos can confirm after friday 12h
+  const fimPrioridade = peladaDate ? peladaDate - (47.5 * 60 * 60 * 1000) : null;
+  const dentroPrioridade = fimPrioridade && now < fimPrioridade;
 
   const userId = currentUser?.id;
+  const ehJogadorCadastrado = !!appData.jogadores.find(x => x.id === userId);
   const jaConfirmado = confirmados.includes(userId);
   const naEspera = espera.includes(userId);
-  const inadimplente = userId && !currentUser?.isGuest ? jogadorInadimplente(userId) : false;
+  const inadimplente = ehJogadorCadastrado ? jogadorInadimplente(userId) : false;
   const ehMensalista = userId ? jogadorMensalista(userId) : false;
   const listaCheia = confirmados.length >= vagas;
-  const esperaCheia = espera.length >= vagasEspera;
+  const esperaCheia = espera.length >= 5;
 
-  // Can confirm: not guest, not inadimplente, has a spot or waiting list available
-  const podeConfirmar = userId && !currentUser?.isGuest && !inadimplente && !jaConfirmado && !naEspera;
+  // Pode confirmar: cadastrado, não guest, não inadimplente, não na lista
+  const podeConfirmar = ehJogadorCadastrado
+    && !currentUser?.isGuest
+    && !inadimplente
+    && !jaConfirmado
+    && !naEspera;
 
-  // Build sorted name list
+  // Sorted names
   const confirmadosNomes = confirmados.map(id => {
     const j = appData.jogadores.find(x => x.id === id);
     return { id, nome: j?.nome || id, mensalista: jogadorMensalista(id) };
@@ -881,9 +901,38 @@ function renderPresenca() {
 
   const localAtual = presenca.local || 'R. Juscelino Barbosa 254';
   const horarioAtual = presenca.horario || horario;
-  const descricaoAtual = `Pelada do Torneira\n${localAtual}\n${horarioAtual}\nPix: mfnassif16@gmail.com`;
+  const descricaoAtual = `Pelada do Torneira${dataLista?' '+dataLista:''}
+${localAtual}
+${horarioAtual}
+Pix: mfnassif16@gmail.com`;
 
-  const isAdminUser = currentUser?.isAdmin;
+  // Determine button state
+  let btnHTML = '';
+  if (!userId || currentUser?.isGuest) {
+    btnHTML = ''; // visitantes não veem botão
+  } else if (!ehJogadorCadastrado) {
+    btnHTML = `<button class="btn btn-ghost" disabled style="opacity:0.6;cursor:not-allowed">
+      🚫 JOGADOR NÃO CADASTRADO
+    </button>`;
+  } else if (inadimplente) {
+    btnHTML = `<button class="btn btn-danger" onclick="goTo('financas')" style="opacity:0.9">
+      ⚠️ HÁ DÉBITOS EM ABERTO
+    </button>`;
+  } else if (jaConfirmado) {
+    btnHTML = `<button class="btn btn-danger" onclick="desmarcarPresenca()">
+      ${dentro24h ? '❌ DESMARCAR (multa R$10)' : 'DESMARCAR'}
+    </button>`;
+  } else if (naEspera) {
+    btnHTML = `<button class="btn btn-ghost" onclick="desmarcarPresenca()">SAIR DA LISTA DE ESPERA</button>`;
+  } else if (dentroPrioridade && !ehMensalista) {
+    btnHTML = `<button class="btn btn-ghost" disabled>⏳ LISTA RESERVADA (mensalistas até Sex 12h)</button>`;
+  } else if (listaCheia && esperaCheia) {
+    btnHTML = `<button class="btn btn-ghost" disabled>LISTA COMPLETA</button>`;
+  } else if (listaCheia) {
+    btnHTML = `<button class="btn btn-ghost" onclick="confirmarPresenca()">ENTRAR NA LISTA DE ESPERA</button>`;
+  } else {
+    btnHTML = `<button class="btn btn-gold" onclick="confirmarPresenca()">✅ CONFIRMAR PRESENÇA</button>`;
+  }
 
   cont.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-top:16px;margin-bottom:6px">
@@ -892,7 +941,6 @@ function renderPresenca() {
     </div>
     <div class="card shield-card" style="margin-bottom:12px">
       <div style="white-space:pre-line;font-size:13px;color:var(--text);line-height:1.7;margin-bottom:14px;font-weight:500">${descricaoAtual}</div>
-
       ${confirmadosNomes.length > 0 ? `
       <div style="margin-bottom:10px">
         ${confirmadosNomes.map((p,i) => `
@@ -902,7 +950,6 @@ function renderPresenca() {
             ${p.id===userId?'<span style="font-size:9px;color:var(--gold)">← você</span>':''}
           </div>`).join('')}
       </div>` : `<div style="font-size:12px;color:var(--t3);margin-bottom:10px">Nenhuma confirmação ainda</div>`}
-
       ${esperaNomes.length > 0 ? `
       <div style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px">
         <div style="font-size:10px;letter-spacing:1px;color:var(--t2);margin-bottom:6px">LISTA DE ESPERA</div>
@@ -911,33 +958,14 @@ function renderPresenca() {
             ${i+1}. ${p.nome}${p.id===userId?' ← você':''}
           </div>`).join('')}
       </div>` : ''}
-
-      <div style="font-size:10px;color:var(--t3);margin-top:10px;margin-bottom:12px">${total}/${vagas} confirmados · ${espera.length}/${vagasEspera} espera${total>=15?' · <span style="color:var(--gold)">✓ pronto para sorteio</span>':''}</div>
-
-      ${inadimplente ? `
-        <div style="background:rgba(255,68,68,.1);border:1px solid rgba(255,68,68,.3);border-radius:8px;padding:10px 12px;font-size:12px;color:#ef4444;margin-bottom:10px">
-          ⚠️ Você possui pendências financeiras. Regularize para confirmar presença.
-        </div>` : ''}
-
-      ${jaConfirmado ? `
-        <button class="btn btn-danger" onclick="desmarcarPresenca()" style="font-size:14px">
-          ${dentro24h ? '❌ DESMARCAR (multa R$10)' : 'DESMARCAR'}
-        </button>` :
-       naEspera ? `
-        <button class="btn btn-ghost" onclick="desmarcarPresenca()">SAIR DA LISTA DE ESPERA</button>` :
-       podeConfirmar ? (
-         listaCheia && !ehMensalista && dentroPrioridade ? `
-          <button class="btn btn-ghost" ${esperaCheia?'disabled':''} onclick="confirmarPresenca()">
-            ${esperaCheia ? 'LISTA DE ESPERA CHEIA' : 'ENTRAR NA LISTA DE ESPERA'}
-          </button>` :
-         listaCheia && esperaCheia ? `
-          <button class="btn btn-ghost" disabled>LISTA COMPLETA</button>` :
-         `<button class="btn btn-gold" onclick="confirmarPresenca()">✅ CONFIRMAR PRESENÇA</button>`
-       ) : (!userId || currentUser?.isGuest ? '' :
-        `<button class="btn btn-ghost" disabled>CONFIRMAR PRESENÇA</button>`
-       )}
+      <div style="font-size:10px;color:var(--t3);margin-top:10px;margin-bottom:12px">
+        ${total}/${vagas} confirmados · ${espera.length}/5 espera
+        ${total>=15?' · <span style="color:var(--gold)">✓ pronto para sorteio</span>':''}
+      </div>
+      ${btnHTML}
     </div>`;
 }
+
 
 async function checkMensalidadeAtual() {
   // Mensalidades são geradas MANUALMENTE pelo admin
@@ -1312,8 +1340,8 @@ function renderPeladasHistorico() {
       ).length;
 
       return `
-      <div class="pelada-hist-card" onclick="${p ? `openPeladaDetalhe('${p.id}')` : ''}"
-        style="cursor:${p ? 'pointer' : 'default'};${podeVotar ? 'border-color:rgba(234,179,8,.5);' : ''}">
+      <div class="pelada-hist-card" onclick="${p ? `openPeladaDetalhe('${p.id}')` : `openDetalheSemHist('${data}')`}"
+        style="cursor:pointer;${podeVotar ? 'border-color:rgba(234,179,8,.5);' : ''}">
         <div style="display:flex;align-items:center;gap:10px">
           <div style="font-size:18px">${podeVotar ? '⭐' : '🏆'}</div>
           <div style="flex:1">
@@ -1447,13 +1475,13 @@ function openPeladaDetalhe(peladaId) {
   // Podium block
   let podioHTML = '';
   if (p.podio) {
-    const medals = ['🥇','🥈','🥉'];
-    const lugares = [p.podio.primeiro, p.podio.segundo, p.podio.terceiro];
+    const medals = ['🥈','🥇','🥉']; // order matches podium display: 2nd-left, 1st-center, 3rd-right
+    const lugares = [p.podio.segundo, p.podio.primeiro, p.podio.terceiro]; // podium order: 2nd left, 1st center, 3rd right
     podioHTML = `<div class="section-lbl" style="margin-top:14px">PÓDIO DO DIA</div>
       <div style="display:flex;gap:8px;margin-bottom:14px">
         ${lugares.map((pl,i) => pl ? `
           <div style="flex:1;background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:10px 8px;text-align:center">
-            <div style="font-size:22px">${medals[i]}</div>
+            <div style="font-size:${i===1?'32':'22'}px">${medals[i]}</div>
             <div style="font-size:11px;font-weight:600;margin-top:4px;color:var(--text)">${pl.nome}</div>
             <div style="font-size:10px;color:var(--t2);margin-top:2px">${pl.scoreDia.toFixed(2)}</div>
           </div>` : '').join('')}
@@ -1539,6 +1567,63 @@ function openPeladaDetalhe(peladaId) {
   openModal('modalPeladaDetalhe');
 }
 window.openPeladaDetalhe = openPeladaDetalhe;
+
+function openDetalheSemHist(data) {
+  // Build a basic stats view from jogadores' domingos for this date
+  const jogNaData = appData.jogadores
+    .map(j => {
+      const dom = (j.domingos||[]).find(d => d.data === data);
+      if (!dom) return null;
+      const score = dom.ausente ? -1 : +(dom.gols + dom.assists + 0.75 * dom.vitorias).toFixed(2);
+      return { id: j.id, nome: j.nome, gols: dom.gols||0, assists: dom.assists||0,
+               vitorias: dom.vitorias||0, scoreDia: score, ausente: dom.ausente };
+    })
+    .filter(Boolean)
+    .sort((a,b) => b.scoreDia - a.scoreDia);
+
+  const presentes = jogNaData.filter(j => !j.ausente);
+  const ausentes  = jogNaData.filter(j => j.ausente);
+
+  const podioHTML = presentes.length > 0 ? `
+    <div class="section-lbl" style="margin-top:4px">PÓDIO DO DIA</div>
+    <div style="display:flex;gap:8px;justify-content:center;margin-bottom:16px">
+      ${[presentes[1], presentes[0], presentes[2]].map((p,i) => p ? `
+        <div style="text-align:center;flex:1;max-width:90px">
+          <div style="font-size:${i===1?'28':'22'}px">${['🥈','🥇','🥉'][i]}</div>
+          <div style="font-size:12px;font-weight:600;margin-top:4px">${p.nome}</div>
+          <div style="font-size:10px;color:var(--t2)">${p.scoreDia.toFixed(2)}</div>
+        </div>` : '<div style="flex:1"></div>').join('')}
+    </div>` : '';
+
+  const rowsHTML = presentes.map((j,i) => `
+    <div class="prow rank-row">
+      <div class="rank-n ${i===0?'g':i===1?'s':i===2?'b':''}">${i===0?'🥇':i===1?'🥈':i===2?'🥉':`#${i+1}`}</div>
+      <div class="rank-name-col"><div class="p-name">${j.nome}</div></div>
+      <div class="rank-stats-row">
+        <div class="rank-stat"><div class="rs-v">${j.scoreDia.toFixed(2)}</div><div class="rs-l">Score</div></div>
+        <div class="rank-stat"><div class="rs-v">${j.gols}</div><div class="rs-l">⚽</div></div>
+        <div class="rank-stat"><div class="rs-v">${j.assists}</div><div class="rs-l">🎯</div></div>
+        <div class="rank-stat"><div class="rs-v">${j.vitorias}</div><div class="rs-l">🏆</div></div>
+      </div>
+    </div>`).join('');
+
+  const ausentesHTML = ausentes.length > 0 ? `
+    <div style="font-size:11px;color:var(--t3);margin-top:10px">
+      Ausentes: ${ausentes.map(j=>j.nome).join(', ')}
+    </div>` : '';
+
+  document.getElementById('peladaDetalheTitle').textContent = `PELADA ${data}`;
+  document.getElementById('peladaDetalheMvp').innerHTML = podioHTML;
+  document.getElementById('peladaDetalheList').innerHTML =
+    `<div class="section-lbl" style="margin-top:4px">ESTATÍSTICAS</div>${rowsHTML}${ausentesHTML}`;
+
+  // Hide delete button for manual entries (no peladaHist id)
+  const delBtn = document.getElementById('btnExcluirPelada');
+  if (delBtn) delBtn.style.display = 'none';
+
+  openModal('modalPeladaDetalhe');
+}
+window.openDetalheSemHist = openDetalheSemHist;
 // ─── DETALHE POR DATA (sem peladaHist) ───────────────────────
 function openPeladaDetalheByData(data) {
   // If there's a peladasHist record for this date, use the full detail view
@@ -3057,6 +3142,17 @@ async function finalizarVotacao(peladaId, p, semNominees) {
   if (document.getElementById('modalPeladaDetalhe').classList.contains('open')) {
     openPeladaDetalhe(peladaId);
   }
+
+  // ── Ciclo: abre lista de presença para o próximo domingo ──
+  // Só abre se não há presença já ativa ou sorteio em andamento
+  if (!appData.ultimoSorteio && !appData.presenca?.confirmados?.length) {
+    const proximoDom = getProximoDomingo();
+    const novaPresenca = { confirmados: [], espera: [], data: proximoDom };
+    appData.presenca = novaPresenca;
+    await firestoreSet('config', 'presenca', novaPresenca);
+    saveLocal();
+  }
+  renderPresenca();
 }
 
 // Auto-close expired votacoes on load
@@ -3528,10 +3624,16 @@ async function encerrarVotacaoForce(peladaId) {
   if (!currentUser?.isAdmin) return;
   if (!confirm('Encerrar a votação MVP agora?')) return;
   const p = (appData.peladasHist||[]).find(x=>x.id===peladaId);
-  if (!p || p.votacao?.status !== 'aberta') return;
+  if (!p || p.votacao?.status !== 'aberta') { showToast('Votação não encontrada ou já encerrada'); return; }
   await finalizarVotacao(peladaId, p, false);
+  // Force local update so renderPresenca sees it immediately (before onSnapshot fires)
+  if (p.votacao) p.votacao.status = 'encerrada';
+  const localIdx = (appData.peladasHist||[]).findIndex(x=>x.id===peladaId);
+  if (localIdx >= 0) appData.peladasHist[localIdx] = p;
   closeModal('modalPeladaDetalhe');
-  showToast('Votação encerrada! ✅');
+  renderPresenca();
+  renderPeladasHistorico();
+  showToast('Votação encerrada! ✅ Lista de presença liberada.');
 }
 window.encerrarVotacaoForce = encerrarVotacaoForce;
 window.checkVotacoesExpiradas=checkVotacoesExpiradas;
