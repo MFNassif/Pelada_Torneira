@@ -329,7 +329,7 @@ function renderHome() {
   const stats = document.getElementById('homeStats');
 
   if (!sorteio || !sorteio.times || sorteio.times.length === 0) {
-    msg.innerHTML = '<div style="font-family:'Oswald',sans-serif;font-size:16px;color:var(--t2);letter-spacing:1px">TIMES AINDA NÃO SORTEADOS</div>';
+    msg.innerHTML = `<div style="font-family:'Oswald',sans-serif;font-size:16px;color:var(--t2);letter-spacing:1px">TIMES AINDA NÃO SORTEADOS</div>`;
     stats.innerHTML = '';
     return;
   }
