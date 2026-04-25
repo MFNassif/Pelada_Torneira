@@ -6,9 +6,7 @@ import {
   getFirestore, collection, doc, setDoc, getDoc, getDocs,
   onSnapshot, updateDoc, deleteDoc
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
-import {
-  getStorage, ref, uploadString, getDownloadURL
-} from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js';
+
 
 // ─── CONSTANTS ───────────────────────────────────────────────
 const K_SHRINKAGE = 5;
@@ -48,12 +46,10 @@ function usarSemFirebase() {
   showSetup(false); showLogin(true);
 }
 
-let storage_fire = null;
 function initFB(cfg) {
   try {
     const app = initializeApp(cfg);
     db_fire = getFirestore(app);
-    storage_fire = getStorage(app);
   } catch(e) { console.error(e); showToast('Erro Firebase'); }
 }
 
