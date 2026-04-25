@@ -21,6 +21,21 @@ let currentUser = null;
 let appData = { jogadores: [], restricoes: [], config: { aleatoriedade: 15 }, admins: [], nextId: 1, presenca: null, financas: {} };
 let unsubscribe = null;
 
+// ─── HELPER: convert Firestore times obj back to array of arrays ─
+function timesToArr(times, count) {
+  if (!times) return [];
+  if (Array.isArray(times)) return times; // already array (local)
+  // Convert {t0:[...], t1:[...]} back to [[...],[...]]
+  const n = count || Object.keys(times).length;
+  const arr = [];
+  for (let i = 0; i < n; i++) {
+    const t = times['t' + i];
+    if (t) arr.push(t);
+  }
+  return arr;
+}
+
+
 // ─── FIREBASE ────────────────────────────────────────────────
 function salvarFirebaseConfig() {
   const cfg = {
@@ -68,12 +83,19 @@ async function boot() {
   initFB(FIREBASE_CONFIG);
   await loadData();
   const su = localStorage.getItem(LS_USER);
-  if (!su) { showLogin(true); return; }
+  if (!su) { showLogin(true); voltarLogin(); return; }
   currentUser = JSON.parse(su);
+  // Guests are never persisted — if somehow stored, clear and show login
+  if (currentUser.isGuest) {
+    currentUser = null;
+    localStorage.removeItem(LS_USER);
+    showLogin(true); voltarLogin(); return;
+  }
   currentUser.isAdmin = (appData.admins || []).includes(currentUser.id);
+  // Refresh foto from jogadores data
+  const jAtual = appData.jogadores.find(x => x.id === currentUser.id);
+  if (jAtual) currentUser.foto = jAtual.foto || null;
   localStorage.setItem(LS_USER, JSON.stringify(currentUser));
-  // Auto-gerar mensalidade do mês para mensalistas
-  await checkMensalidadeAtual();
   // Auto-check: remove avulsos não pagos após sáb 12h
   await checkAvulsosInadimplentes();
   showApp();
@@ -86,31 +108,46 @@ async function entrar() {
   const match = appData.jogadores.find(j => j.nome.toLowerCase() === nome.toLowerCase());
 
   if (match) {
+    // Jogador cadastrado → pede senha
     if (match.senha) {
       showPasswordStep(match, 'login');
     } else {
       showPasswordStep(match, 'criar');
     }
   } else {
+    // Nome não cadastrado → entra como visitante (sem salvar, sem conta)
     currentUser = { id: 'guest_' + Date.now(), nome, isAdmin: false, isGuest: true };
-    localStorage.setItem(LS_USER, JSON.stringify(currentUser));
+    // NÃO salva no localStorage — sessão temporária
     showLogin(false);
     showApp();
   }
+}
+
+function entrarComoVisitante() {
+  // Entra sem nome — visitante anônimo
+  currentUser = { id: 'guest_anon', nome: 'Visitante', isAdmin: false, isGuest: true };
+  showLogin(false);
+  showApp();
 }
 
 function showPasswordStep(jogador, modo) {
   const loginCard = document.getElementById('loginCard');
   const isLogin = modo === 'login';
   loginCard.innerHTML = `
-    <div style="font-family:'Oswald',sans-serif;font-size:18px;font-weight:700;color:var(--gold-lt);margin-bottom:4px">
-      ${isLogin ? 'BEM-VINDO,' : 'CRIAR SENHA,'}
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+      ${jogador.foto
+        ? `<img src="${jogador.foto}" style="width:44px;height:44px;border-radius:50%;object-fit:cover;border:2px solid var(--border-gold)">`
+        : `<div style="width:44px;height:44px;border-radius:50%;background:var(--gold-dim);border:2px solid var(--border-gold);display:flex;align-items:center;justify-content:center;font-family:'Oswald',sans-serif;font-size:20px;color:var(--gold)">${jogador.nome[0].toUpperCase()}</div>`
+      }
+      <div>
+        <div style="font-family:'Oswald',sans-serif;font-size:16px;font-weight:700;color:var(--gold-lt)">${jogador.nome.toUpperCase()}</div>
+        <div style="font-size:11px;color:var(--t2)">${isLogin ? 'Jogador cadastrado' : '✨ Primeiro acesso — crie sua senha'}</div>
+      </div>
     </div>
-    <div style="font-size:13px;color:var(--t2);margin-bottom:18px">${jogador.nome}</div>
-    ${!isLogin ? `<div style="font-size:11px;color:var(--t2);margin-bottom:12px">Crie uma senha para proteger sua conta</div>` : ''}
     <div class="field">
-      <label>${isLogin ? 'Senha' : 'Nova senha'}</label>
-      <input class="input" id="inputSenha" type="password" placeholder="••••••" maxlength="30" onkeydown="if(event.key==='Enter')confirmarSenha('${jogador.id}','${modo}')">
+      <label>${isLogin ? 'Sua senha' : 'Criar senha (mín. 4 caracteres)'}</label>
+      <input class="input" id="inputSenha" type="password" placeholder="••••••" maxlength="30"
+        onkeydown="if(event.key==='Enter')confirmarSenha('${jogador.id}','${modo}')">
     </div>
     ${!isLogin ? `
     <div class="field">
@@ -118,7 +155,7 @@ function showPasswordStep(jogador, modo) {
       <input class="input" id="inputSenha2" type="password" placeholder="••••••" maxlength="30">
     </div>` : ''}
     <button class="btn btn-gold" onclick="confirmarSenha('${jogador.id}','${modo}')">
-      ${isLogin ? 'ENTRAR' : 'CRIAR SENHA E ENTRAR'}
+      ${isLogin ? 'ENTRAR ⚽' : 'CRIAR SENHA E ENTRAR ⚽'}
     </button>
     <button class="btn btn-ghost mt8" onclick="voltarLogin()">← VOLTAR</button>
   `;
@@ -132,8 +169,12 @@ function voltarLogin() {
       <input class="input" id="loginNome" placeholder="Como te chamam?" maxlength="25" onkeydown="if(event.key==='Enter')entrar()">
     </div>
     <button class="btn btn-gold" onclick="entrar()">ENTRAR ⚽</button>
-    <div style="font-size:11px;color:var(--t3);text-align:center;margin-top:12px">Nenhuma senha necessária</div>
+    <button class="btn btn-ghost" style="margin-top:8px" onclick="entrarComoVisitante()">👁️ VER SEM CONTA</button>
+    <div style="font-size:11px;color:var(--t3);text-align:center;margin-top:10px">
+      Jogadores cadastrados precisam de senha
+    </div>
   `;
+  setTimeout(() => document.getElementById('loginNome')?.focus(), 100);
 }
 
 function hashSenha(s) {
@@ -580,7 +621,14 @@ function showApp() {
   document.getElementById('adminJogBtn').style.display=currentUser?.isAdmin?'block':'none';
   document.getElementById('adminRestBtn').style.display=currentUser?.isAdmin?'block':'none';
   document.getElementById('adminCard').style.display=currentUser?.isAdmin?'block':'none';
-  document.getElementById('btnSortear').style.display=currentUser?.isAdmin?'flex':'none';
+  const btnSortear = document.getElementById('btnSortear');
+  if (btnSortear) {
+    btnSortear.style.display = currentUser?.isAdmin ? 'flex' : 'none';
+    const confirmados = appData.presenca?.confirmados || [];
+    btnSortear.textContent = confirmados.length >= 15
+      ? `⚽ SORTEAR TIMES (${confirmados.length} confirmados)`
+      : '⚽ SORTEAR TIMES';
+  }
   const btnCom = document.getElementById('btnComunicado');
   if (btnCom) btnCom.style.display = currentUser?.isAdmin ? 'block' : 'none';
   renderHome();
@@ -600,7 +648,8 @@ function renderHome() {
   const stats = document.getElementById('homeStats');
   const adminControls = document.getElementById('homeAdminControls');
 
-  if (!sorteio || !sorteio.times || sorteio.times.length === 0) {
+  const sorteioTimesArr = timesToArr(sorteio?.times, sorteio?.timesCount);
+  if (!sorteio || !sorteio.times || sorteioTimesArr.length === 0) {
     msg.innerHTML = `<div style="font-family:'Oswald',sans-serif;font-size:16px;color:var(--t2);letter-spacing:1px">TIMES AINDA NÃO SORTEADOS</div>`;
     stats.innerHTML = '';
     if (adminControls) adminControls.innerHTML = '';
@@ -610,7 +659,7 @@ function renderHome() {
       ? `<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);border-radius:99px;padding:4px 12px;font-size:11px;color:#22c55e;margin-bottom:12px">● PARTIDA EM ANDAMENTO</div>`
       : '';
 
-    const timesHTML = sorteio.times.map((t, ti) => `
+    const timesHTML = sorteioTimesArr.map((t, ti) => `
       <div class="team-card ${T_COLORS[ti]}" style="margin-bottom:8px">
         <div class="t-name"><div class="t-dot"></div>Time ${ti+1}</div>
         ${t.map(id => {
@@ -804,7 +853,7 @@ function renderPresenca() {
           </div>`).join('')}
       </div>` : ''}
 
-      <div style="font-size:10px;color:var(--t3);margin-top:10px;margin-bottom:12px">${total}/${vagas} confirmados · ${espera.length}/${vagasEspera} espera</div>
+      <div style="font-size:10px;color:var(--t3);margin-top:10px;margin-bottom:12px">${total}/${vagas} confirmados · ${espera.length}/${vagasEspera} espera${total>=15?' · <span style="color:var(--gold)">✓ pronto para sorteio</span>':''}</div>
 
       ${inadimplente ? `
         <div style="background:rgba(255,68,68,.1);border:1px solid rgba(255,68,68,.3);border-radius:8px;padding:10px 12px;font-size:12px;color:#ef4444;margin-bottom:10px">
@@ -818,7 +867,7 @@ function renderPresenca() {
        naEspera ? `
         <button class="btn btn-ghost" onclick="desmarcarPresenca()">SAIR DA LISTA DE ESPERA</button>` :
        podeConfirmar ? (
-         listaCheia && !ehMensalista && dentro48h ? `
+         listaCheia && !ehMensalista && dentroPrioridade ? `
           <button class="btn btn-ghost" ${esperaCheia?'disabled':''} onclick="confirmarPresenca()">
             ${esperaCheia ? 'LISTA DE ESPERA CHEIA' : 'ENTRAR NA LISTA DE ESPERA'}
           </button>` :
@@ -835,15 +884,6 @@ async function checkMensalidadeAtual() {
   // Mensalidades são geradas MANUALMENTE pelo admin
   // Não gera débitos automaticamente para evitar cobranças antes do prazo
   return;
-}
-
- d.tipo==='mensal' && d.descricao?.includes(mesRef));
-    if (!jaTemEsseMes) {
-      await adicionarDebitoComData(j.id, 'mensal', 80, `Mensalidade ${mesRef}`, data5du);
-      gerou = true;
-    }
-  }
-  if (gerou) renderFinancas();
 }
 
 async function checkAvulsosInadimplentes() {
@@ -1029,21 +1069,21 @@ function renderPeladasHistorico() {
   if (!container) return;
   const isAdmin = currentUser?.isAdmin;
 
-  // Collect all unique dates from players' domingos
+  // Collect all unique dates from ALL players' domingos
   const datasSet = new Set();
   for (const j of appData.jogadores) {
     for (const d of (j.domingos||[])) {
       if (d.data) datasSet.add(d.data);
     }
   }
-  // Also include dates from peladasHist that might not be in jogadores yet
+  // Also include dates from peladasHist
   for (const p of (appData.peladasHist||[])) {
     if (p.data) datasSet.add(p.data);
   }
 
   if (!datasSet.size) { container.innerHTML = ''; return; }
 
-  // Sort dates descending (dd/mm/yyyy format)
+  // Sort dates descending (dd/mm/yyyy)
   const parseDMY = s => { const [d,m,y] = s.split('/'); return new Date(+y,+m-1,+d).getTime(); };
   const datas = [...datasSet].sort((a,b) => parseDMY(b) - parseDMY(a));
 
@@ -1057,7 +1097,6 @@ function renderPeladasHistorico() {
   container.innerHTML = `
     <div class="section-lbl" style="margin-top:16px">PELADAS ANTERIORES</div>
     ${datas.map(data => {
-      // Find matching peladaHist record for this date
       const p = histUnique.find(x => x.data === data);
       const votAberta = p?.votacao?.status === 'aberta';
       const podeVotar = votAberta && currentUser && !currentUser.isGuest
@@ -1066,33 +1105,43 @@ function renderPeladasHistorico() {
       const totalVotos = Object.keys(p?.votacao?.votos||{}).length;
       const totalEleg = p?.votacao?.elegiveisVotar?.length||0;
       const mvpNome = p?.mvp?.nome || (votAberta ? '...' : '—');
-      // Count players who played this date (from jogadores' domingos)
-      const jogadoresNaData = appData.jogadores.filter(j =>
+
+      // Count players who played this date (not ausente)
+      const jogNaData = appData.jogadores.filter(j =>
         (j.domingos||[]).some(d => d.data === data && !d.ausente)
       ).length;
 
       return `
-      <div class="pelada-hist-card" onclick="${p ? `openPeladaDetalhe('${p.id}')` : ''}" style="cursor:${p?'pointer':'default'};${podeVotar?'border-color:rgba(234,179,8,.5);':''}">
+      <div class="pelada-hist-card" onclick="${p ? `openPeladaDetalhe('${p.id}')` : ''}"
+        style="cursor:${p ? 'pointer' : 'default'};${podeVotar ? 'border-color:rgba(234,179,8,.5);' : ''}">
         <div style="display:flex;align-items:center;gap:10px">
-          <div style="font-size:18px">${podeVotar?'⭐':'🏆'}</div>
+          <div style="font-size:18px">${podeVotar ? '⭐' : '🏆'}</div>
           <div style="flex:1">
-            <div style="font-family:'Oswald',sans-serif;font-size:14px;font-weight:700;letter-spacing:1px;color:var(--gold-lt)">PELADA DO TORNEIRA ${data}</div>
+            <div style="font-family:'Oswald',sans-serif;font-size:14px;font-weight:700;letter-spacing:1px;color:var(--gold-lt)">
+              PELADA DO TORNEIRA ${data}
+            </div>
             <div style="font-size:11px;color:var(--t2);margin-top:2px">
-              ${jogadoresNaData} jogadores
-              ${p ? ` · ${votAberta
+              ${jogNaData} jogadores${p ? ` · ${votAberta
                 ? `<span style="color:#eab308">⏳ Votação: ${totalVotos}/${totalEleg}</span>`
                 : `MVP: ${mvpNome}`}` : ''}
             </div>
           </div>
           <div style="display:flex;align-items:center;gap:6px">
-            ${isAdmin && p && votAberta ? `<button onclick="event.stopPropagation();encerrarVotacaoForce('${p.id}')" style="background:rgba(234,179,8,.15);border:1px solid rgba(234,179,8,.3);border-radius:8px;color:#eab308;font-size:11px;padding:4px 10px;cursor:pointer;font-family:'DM Sans',sans-serif">⚡ MVP</button>` : ''}
-            ${isAdmin && p ? `<button onclick="event.stopPropagation();excluirPelada('${p.id}')" style="background:rgba(255,68,68,.1);border:1px solid rgba(255,68,68,.2);border-radius:8px;color:#ef4444;font-size:11px;padding:4px 10px;cursor:pointer;font-family:'DM Sans',sans-serif">🗑️</button>` : ''}
-            <div style="color:${podeVotar?'#eab308':'var(--t3)'};font-size:16px">${podeVotar?'VOTAR':'›'}</div>
+            ${isAdmin && p && votAberta
+              ? `<button onclick="event.stopPropagation();encerrarVotacaoForce('${p.id}')"
+                  style="background:rgba(234,179,8,.15);border:1px solid rgba(234,179,8,.3);border-radius:8px;color:#eab308;font-size:11px;padding:4px 10px;cursor:pointer;font-family:'DM Sans',sans-serif">⚡ MVP</button>`
+              : ''}
+            ${isAdmin && p
+              ? `<button onclick="event.stopPropagation();excluirPelada('${p.id}')"
+                  style="background:rgba(255,68,68,.1);border:1px solid rgba(255,68,68,.2);border-radius:8px;color:#ef4444;font-size:11px;padding:4px 10px;cursor:pointer;font-family:'DM Sans',sans-serif">🗑️</button>`
+              : ''}
+            <div style="color:${podeVotar ? '#eab308' : 'var(--t3)'};font-size:16px">${podeVotar ? 'VOTAR' : p ? '›' : ''}</div>
           </div>
         </div>
       </div>`;
     }).join('')}`;
 }
+
 
 // ─── DETALHE DA PELADA ────────────────────────────────────────
 function openPeladaDetalhe(peladaId) {
@@ -1102,16 +1151,14 @@ function openPeladaDetalhe(peladaId) {
   const v = p.votacao;
   const meuVoto = v?.votos?.[currentUser?.id];
   const jaVotou = !!meuVoto;
-  const podeVotar = currentUser && !currentUser.isGuest
-    && v?.status === 'aberta'
-    && v?.elegiveisVotar?.includes(currentUser.id)
-    && !jaVotou
-    && !v?.nominees?.find(n => n.id === currentUser.id); // nominees cannot vote for themselves... actually they can for others
-  // Actually: nominees CAN vote, just not for themselves (handled in votarMvp)
-  const podeVotarFinal = currentUser && !currentUser.isGuest
-    && v?.status === 'aberta'
-    && v?.elegiveisVotar?.includes(currentUser.id)
-    && !jaVotou;
+  // Check eligibility — elegiveisVotar is an array of player IDs
+  // Also check by matching jogador id in peladaJogadores in case elegiveisVotar is missing
+  const jogoiuNaPelada = !currentUser?.isGuest && (
+    (v?.elegiveisVotar?.includes(currentUser?.id)) ||
+    (p.jogadores||[]).some(j => j.id === currentUser?.id && !j.ausente)
+  );
+  const podeVotar = jogoiuNaPelada && v?.status === 'aberta' && !jaVotou;
+  const podeVotarFinal = podeVotar;
 
   // Time remaining
   let tempoHTML = '';
@@ -1271,6 +1318,17 @@ function openPeladaDetalhe(peladaId) {
       </div>`;
     }).join('');
 
+  // DEBUG: log voting state to console
+  console.log('[MVP DEBUG]', {
+    currentUserId: currentUser?.id,
+    elegiveisVotar: v?.elegiveisVotar,
+    inclui: v?.elegiveisVotar?.includes(currentUser?.id),
+    status: v?.status,
+    jaVotou,
+    podeVotarFinal,
+    votos: v?.votos
+  });
+
   document.getElementById('peladaDetalheTitle').textContent = `PELADA ${p.data}`;
   // Add delete button for admins
   const delBtn = document.getElementById('btnExcluirPelada');
@@ -1281,6 +1339,70 @@ function openPeladaDetalhe(peladaId) {
   openModal('modalPeladaDetalhe');
 }
 window.openPeladaDetalhe = openPeladaDetalhe;
+// ─── DETALHE POR DATA (sem peladaHist) ───────────────────────
+function openPeladaDetalheByData(data) {
+  // If there's a peladasHist record for this date, use the full detail view
+  const pHist = (appData.peladasHist||[]).find(x => x.data === data);
+  if (pHist) { openPeladaDetalhe(pHist.id); return; }
+
+  // Otherwise build from jogadores' domingos (manually inserted data)
+  const jogadoresNaData = appData.jogadores
+    .map(j => {
+      const dom = (j.domingos||[]).find(d => d.data === data);
+      if (!dom || dom.ausente) return null;
+      const scoreDia = (dom.gols||0) + (dom.assists||0) + 0.75*(dom.vitorias||0);
+      return { id: j.id, nome: j.nome, gols: dom.gols||0, assists: dom.assists||0, vitorias: dom.vitorias||0, scoreDia };
+    })
+    .filter(Boolean)
+    .sort((a,b) => b.scoreDia - a.scoreDia);
+
+  if (!jogadoresNaData.length) { showToast('Nenhuma estatística encontrada para esta data'); return; }
+
+  const rowsHTML = jogadoresNaData.map((j, i) => {
+    const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':`#${i+1}`;
+    return `
+    <div class="prow rank-row">
+      <div class="rank-row-top">
+        <div class="rank-n ${i===0?'g':i===1?'s':i===2?'b':''}">${medal}</div>
+        <div class="rank-name-col"><div class="p-name">${j.nome}</div></div>
+      </div>
+      <div class="rank-stats-row">
+        <div class="rank-stat"><div class="rs-v">${j.scoreDia.toFixed(2)}</div><div class="rs-l">Score</div></div>
+        <div class="rank-stat"><div class="rs-v">${j.gols}</div><div class="rs-l">⚽</div></div>
+        <div class="rank-stat"><div class="rs-v">${j.assists}</div><div class="rs-l">🎯</div></div>
+        <div class="rank-stat"><div class="rs-v">${j.vitorias}</div><div class="rs-l">🏆</div></div>
+      </div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('peladaDetalheTitle').textContent = `PELADA ${data}`;
+  const delBtn = document.getElementById('btnExcluirPelada');
+  if (delBtn) {
+    delBtn.style.display = currentUser?.isAdmin ? 'block' : 'none';
+    delBtn.onclick = () => excluirPeladaPorData(data);
+  }
+  document.getElementById('peladaDetalheMvp').innerHTML = '';
+  document.getElementById('peladaDetalheList').innerHTML =
+    `<div class="section-lbl" style="margin-top:4px">ESTATÍSTICAS COMPLETAS</div>` + rowsHTML;
+  openModal('modalPeladaDetalhe');
+}
+window.openPeladaDetalheByData = openPeladaDetalheByData;
+
+async function excluirPeladaPorData(data) {
+  if (!currentUser?.isAdmin) return;
+  const jogadoresComData = appData.jogadores.filter(j => (j.domingos||[]).some(d => d.data === data));
+  if (!confirm(`Excluir pelada de ${data}? Remove estatísticas de ${jogadoresComData.length} jogadores.`)) return;
+  if (!confirm('Tem certeza? Esta ação não pode ser desfeita.')) return;
+  for (const j of jogadoresComData) {
+    j.domingos = (j.domingos||[]).filter(d => d.data !== data);
+    await firestoreSet('jogadores', j.id, j);
+  }
+  closeModal('modalPeladaDetalhe');
+  renderPeladasHistorico();
+  showToast(`Pelada de ${data} excluída`);
+}
+window.excluirPeladaPorData = excluirPeladaPorData;
+
 
 async function excluirPelada(peladaId) {
   if (!currentUser?.isAdmin) return;
@@ -1383,6 +1505,13 @@ async function salvarJogador() {
   if(isNaN(notaVal)||notaVal<0||notaVal>10){showToast('Nota deve ser 0–10');return;}
   const nota=+notaVal.toFixed(1);
   const tipo = document.getElementById('inpTipo')?.value || 'avulso';
+  // Check duplicate name (case-insensitive), ignoring the player being edited
+  const nomeLower = nome.toLowerCase();
+  const duplicado = appData.jogadores.find(j =>
+    j.nome.toLowerCase() === nomeLower && j.id !== editId
+  );
+  if (duplicado) { showToast(`Já existe um jogador chamado "${duplicado.nome}"`); return; }
+
   if(editId){
     const j=appData.jogadores.find(x=>x.id===editId);
     if(j){j.nome=nome;j.nota=nota;j.tipoJogador=tipo;await firestoreSet('jogadores',editId,j);}
@@ -2047,26 +2176,52 @@ const T_COLORS=['t0','t1','t2','t3'];
 
 function startFlow() {
   if(!currentUser?.isAdmin){showToast('Sem permissão');return;}
-  if(appData.jogadores.length<15){showToast('Cadastre pelo menos 15 jogadores');return;}
-  openModal('modalDataSorteio');
-  document.getElementById('inputDataSorteio').value = new Date().toLocaleDateString('pt-BR');
+  // Check if there's a confirmed presença list to use
+  const confirmados = appData.presenca?.confirmados || [];
+  if (confirmados.length > 0) {
+    // Has presença list — use it (any number)
+    openModal('modalDataSorteio');
+    const dataPres = appData.presenca?.data || new Date().toLocaleDateString('pt-BR');
+    document.getElementById('inputDataSorteio').value = dataPres;
+    // Show info about what will happen
+    const info = document.getElementById('dataSorteioInfo');
+    if (info) {
+      const n = confirmados.length;
+      const pode = n===15||n===20;
+      info.textContent = pode
+        ? `✅ ${n} confirmados → sortear ${n===15?3:4} times`
+        : `⚠️ ${n} confirmados → sem sorteio de times (requer 15 ou 20)`;
+      info.style.color = pode ? 'var(--gold)' : '#eab308';
+    }
+  } else {
+    // No presença list — manual selection
+    if(appData.jogadores.length<15){showToast('Cadastre pelo menos 15 jogadores');return;}
+    openModal('modalDataSorteio');
+    document.getElementById('inputDataSorteio').value = new Date().toLocaleDateString('pt-BR');
+    const info = document.getElementById('dataSorteioInfo');
+    if (info) { info.textContent = 'Seleção manual de jogadores'; info.style.color = 'var(--t2)'; }
+  }
 }
 
 async function confirmarDataSorteio() {
   const data = document.getElementById('inputDataSorteio').value.trim();
   if (!data) { showToast('Informe a data da pelada'); return; }
   closeModal('modalDataSorteio');
+
+  const confirmados = appData.presenca?.confirmados || [];
+
+  // Always open sel screen pre-populated with confirmados
+  // Admin can add/remove before sorting
   flow={
-    step:'sel', presentes:[], times:[], data,
+    step: 'sel',
+    presentes: [...confirmados],
+    times:[], data,
     ausentes:[], statsIdx:0, statsOrder:[], statsData:{}, _saving:false
   };
-  appData.restricoes=appData.restricoes.filter(r=>r.duracao!=='domingo');
-  // Clear any previous presença when starting new sorteio
-  if (appData.presenca) {
-    await firestoreDelete('config','presenca');
-    appData.presenca = null;
-  }
-  saveLocal(); renderFlow();
+
+  appData.restricoes = appData.restricoes.filter(r=>r.duracao!=='domingo');
+  saveLocal();
+  renderFlow();
   document.getElementById('flow').style.display='block';
 }
 function closeFlow() {
@@ -2085,36 +2240,116 @@ function renderFlow() {
   if(flow.step==='saving') return; // actively saving, do not re-render
   const c=document.getElementById('flowContent'),t=document.getElementById('flowTitle');
   if(flow.step==='sel') renderFlowSel(c,t);
+  else if(flow.step==='lista') renderFlowLista(c,t);
   else if(flow.step==='times') renderFlowTimes(c,t);
   else if(flow.step==='ausentes') renderFlowAusentes(c,t);
   else if(flow.step==='stats') { t.textContent=`ESTATÍSTICAS ${flow.statsIdx+1}/${flow.statsOrder.length}`; renderStatsStep(c); }
+}
+
+function renderFlowLista(c,t) {
+  t.textContent = `LISTA (${flow.presentes.length} jogadores)`;
+  const aus = flow.ausentes;
+  c.innerHTML = `
+    <div style="background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.2);border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:12px;color:var(--t2)">
+      ⚠️ Lista com <strong style="color:var(--gold-lt)">${flow.presentes.length} jogadores</strong> — sem sorteio de times
+      (sorteio requer exatamente 15 ou 20)
+    </div>
+    <div style="margin-bottom:14px">
+      ${flow.presentes.map(id => {
+        const j = appData.jogadores.find(x=>x.id===id);
+        const ausente = aus.includes(id);
+        return `<div class="prow ${ausente?'sel':''}" onclick="toggleAusente('${id}')" style="${ausente?'border-color:#ef4444;background:rgba(239,68,68,.05)':''}">
+          <div class="p-avatar">${j?.nome?.[0]?.toUpperCase()||'?'}</div>
+          <div class="p-name">${j?.nome||id}</div>
+          <div style="font-size:20px">${ausente?'❌':'✅'}</div>
+        </div>`;
+      }).join('')}
+    </div>
+    <div style="font-size:11px;color:var(--t3);margin-bottom:10px;text-align:center">
+      ${aus.length > 0 ? `${aus.length} falta${aus.length>1?'s':''}` : 'Todos presentes'}
+    </div>
+    <button class="btn btn-gold" onclick="confirmarListaSemTimes()">CONTINUAR → ESTATÍSTICAS</button>`;
+}
+
+function confirmarListaSemTimes() {
+  // Build stats order from presentes (not ausentes), no times
+  flow.statsOrder = flow.presentes.filter(id => !flow.ausentes.includes(id));
+  flow.statsData = {};
+  flow.statsOrder.forEach(id => { flow.statsData[id] = {gols:0, assists:0, vitorias:0}; });
+  flow.statsIdx = 0;
+  flow.step = 'stats';
+  renderFlow();
 }
 
 function renderFlowSel(c,t) {
   t.textContent='SELECIONAR PRESENTES';
   const sel=flow.presentes, n=sel.length;
   const valid=n===15||n===20;
-  const nTimes = n === 15 ? 3 : n === 20 ? 4 : null;
-  const hint = n < 15
-    ? `Selecione <strong style="color:var(--gold)">15</strong> ou <strong style="color:var(--gold)">20</strong> jogadores`
-    : n === 15 || n === 20
-    ? `<span style="color:var(--gold)">✓ ${n} jogadores → ${nTimes} times</span>`
-    : `<span style="color:#ef4444">Selecione exatamente 15 ou 20</span>`;
+  const nTimes = n===15?3:n===20?4:null;
+
+  // Status line
+  let hint, btnStyle='', btnLabel=`SORTEAR TIMES (${n})`;
+  if (n===15||n===20) {
+    hint=`<span style="color:#22c55e">✓ ${n} jogadores → ${nTimes} times</span>`;
+    btnStyle='';
+  } else if (n<15) {
+    hint=`Selecione <strong style="color:var(--gold)">15</strong> ou <strong style="color:var(--gold)">20</strong> · faltam ${15-n}`;
+  } else if (n>15&&n<20) {
+    hint=`<span style="color:#eab308">${n} selecionados — ajuste para 15 ou 20</span>`;
+  } else {
+    hint=`<span style="color:#ef4444">${n} selecionados — máximo 20</span>`;
+  }
+
+  // Show confirmed from presença at top if any
+  const confirmadosPres = appData.presenca?.confirmados || [];
+  const temPresenca = confirmadosPres.length > 0;
 
   c.innerHTML=`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+    ${temPresenca ? `<div style="background:rgba(201,168,76,.08);border:1px solid var(--border-gold);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:var(--t2)">
+      📋 ${confirmadosPres.length} confirmados na lista de presença — pré-selecionados abaixo
+    </div>` : ''}
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
       <div style="font-size:13px;color:var(--t2)">${hint}</div>
-      <div style="font-family:'JetBrains Mono',monospace;font-size:22px;color:${valid?'var(--gold)':'var(--t2)'};font-weight:600">${n}</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:22px;color:${valid?'#22c55e':'var(--t2)'};font-weight:700">${n}</div>
     </div>
-    ${appData.jogadores.map(j=>`
-      <div class="prow ${sel.includes(j.id)?'sel':''}" onclick="toggleP('${j.id}')">
-        <div class="p-avatar">${j.nome[0].toUpperCase()}</div>
-        <div class="p-name">${j.nome}</div>
-        <div style="font-size:20px">${sel.includes(j.id)?'✅':'⬜'}</div>
-      </div>`).join('')}
-    <div style="margin-top:14px">
-      <button class="btn btn-gold" ${valid?'':'disabled'} onclick="confirmarPresentes()">SORTEAR TIMES (${n})</button>
+    ${appData.jogadores.map(j=>{
+      const isSel = sel.includes(j.id);
+      const isConf = confirmadosPres.includes(j.id);
+      const tag = j.tipoJogador==='mensalista'
+        ? '<span style="font-size:9px;background:var(--gold-dim);color:var(--gold);padding:1px 5px;border-radius:4px;margin-left:4px">M</span>'
+        : '';
+      const confTag = isConf
+        ? '<span style="font-size:9px;color:#22c55e;margin-left:4px">✓ conf.</span>'
+        : '';
+      return `
+      <div class="prow ${isSel?'sel':''}" onclick="toggleP('${j.id}')" style="${isConf?'border-color:rgba(34,197,94,.2);':''}">
+        <div class="p-avatar" style="font-size:13px">${j.foto?`<img src="${j.foto}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`:j.nome[0].toUpperCase()}</div>
+        <div class="p-name">${j.nome}${tag}${confTag}</div>
+        <div style="font-size:20px">${isSel?'✅':'⬜'}</div>
+      </div>`;
+    }).join('')}
+    <div style="margin-top:14px;display:flex;gap:8px;flex-direction:column">
+      <button class="btn btn-gold" ${valid?'':'disabled'} onclick="confirmarPresentes()">${btnLabel}</button>
+      ${!valid && n>=15 ? `<button class="btn btn-ghost" onclick="ajustarParaProximo()">AJUSTAR PARA ${n<18?15:20} JOGADORES</button>` : ''}
     </div>`;
+}
+
+function ajustarParaProximo() {
+  const n = flow.presentes.length;
+  const alvo = n < 18 ? 15 : 20;
+  // Remove last ones added (non-confirmed from presença first) until alvo
+  const confirmadosPres = appData.presenca?.confirmados || [];
+  // Sort: remove non-confirmed first
+  while (flow.presentes.length > alvo) {
+    const naoConf = flow.presentes.find(id => !confirmadosPres.includes(id));
+    if (naoConf) {
+      flow.presentes = flow.presentes.filter(x => x !== naoConf);
+    } else {
+      // All are confirmed — remove last
+      flow.presentes.pop();
+    }
+  }
+  renderFlow();
 }
 
 function renderFlowTimes(c,t) {
@@ -2179,7 +2414,7 @@ function toggleAusente(id) {
 
 function confirmarAusentes() {
   // Build stats order: only presentes (not ausentes)
-  flow.statsOrder = flow.times.flat().filter(id => !flow.ausentes.includes(id));
+  flow.statsOrder = (flow.semTimes ? flow.presentes : flow.times.flat()).filter(id => !flow.ausentes.includes(id));
   flow.statsData = {};
   flow.statsOrder.forEach(id => { flow.statsData[id] = {gols:0, assists:0, vitorias:0}; });
   flow.statsIdx = 0;
@@ -2245,15 +2480,23 @@ function cancelarSorteio() {
 }
 
 async function confirmarTimes(){
+  // Firestore doesn't support nested arrays — convert to objects
+  const timesObj = {};
+  const nomesObj = {};
+  flow.times.forEach((t, i) => {
+    timesObj['t' + i] = t;
+    nomesObj['t' + i] = t.map(id => {
+      const j = appData.jogadores.find(x=>x.id===id);
+      return j?.nome || id;
+    });
+  });
   const timesData = {
-    times: flow.times,
+    times: timesObj,
+    timesCount: flow.times.length,
     data: flow.data,
     status: 'confirmado',
     sorteadoEm: Date.now(),
-    nomes: flow.times.map(t => t.map(id => {
-      const j = appData.jogadores.find(x=>x.id===id);
-      return j?.nome || id;
-    }))
+    nomes: nomesObj
   };
   // Save locally first as fallback
   appData.ultimoSorteio = timesData;
@@ -2280,7 +2523,7 @@ function abrirEdicaoTimes() {
   const sorteio = appData.ultimoSorteio;
   if (!sorteio) return;
   // Deep copy times
-  editTimesState = sorteio.times.map(t => [...t]);
+  editTimesState = timesToArr(sorteio.times, sorteio.timesCount).map(t => [...t]);
   renderEdicaoTimes();
   openModal('modalEditTimes');
 }
@@ -2295,7 +2538,7 @@ function renderEdicaoTimes() {
       <div class="t-name" style="font-size:13px;margin-bottom:8px"><div style="width:8px;height:8px;border-radius:50%;background:${dotColors[ti]};flex-shrink:0;display:inline-block;margin-right:6px"></div>Time ${ti+1}</div>
       ${tm.map((id, pi) => {
         const j = appData.jogadores.find(x=>x.id===id);
-        const opts = appData.ultimoSorteio.times.flat().map(pid => {
+        const opts = timesToArr(appData.ultimoSorteio.times, appData.ultimoSorteio.timesCount).flat().map(pid => {
           const pj = appData.jogadores.find(x=>x.id===pid);
           return `<option value="${pid}" ${pid===id?'selected':''}>${pj?.nome||pid}</option>`;
         }).join('');
@@ -2324,11 +2567,19 @@ function moverJogador(timeIdx, posIdx, novoId) {
 async function salvarEdicaoTimes() {
   if (!currentUser?.isAdmin) return;
   const sorteio = appData.ultimoSorteio;
-  sorteio.times = editTimesState;
-  sorteio.nomes = editTimesState.map(t => t.map(id => {
-    const j = appData.jogadores.find(x=>x.id===id);
-    return j?.nome || id;
-  }));
+  // Convert back to Firestore-compatible object
+  const timesObjEdit = {};
+  const nomesObjEdit = {};
+  editTimesState.forEach((t, i) => {
+    timesObjEdit['t' + i] = t;
+    nomesObjEdit['t' + i] = t.map(id => {
+      const j = appData.jogadores.find(x=>x.id===id);
+      return j?.nome || id;
+    });
+  });
+  sorteio.times = timesObjEdit;
+  sorteio.timesCount = editTimesState.length;
+  sorteio.nomes = nomesObjEdit;
   await firestoreSet('config', 'ultimoSorteio', sorteio);
   appData.ultimoSorteio = sorteio;
   saveLocal();
@@ -2355,10 +2606,11 @@ async function concluirPartidaHome() {
   const sorteio = appData.ultimoSorteio;
   if (!sorteio) return;
   // Load flow data from current sorteio to proceed to ausentes/stats
+  const sorteioArr = timesToArr(sorteio.times, sorteio.timesCount);
   flow = {
     step: 'ausentes',
-    presentes: sorteio.times.flat(),
-    times: sorteio.times,
+    presentes: sorteioArr.flat(),
+    times: sorteioArr,
     data: sorteio.data,
     ausentes: [],
     statsIdx: 0,
@@ -2421,7 +2673,8 @@ function statsB(){flow.statsIdx--;renderFlow();}
 
 async function salvarStats() {
   const data = flow.data;
-  const todosNoSorteio = flow.times.flat();
+  // When no teams (irregular list), use presentes directly
+  const todosNoSorteio = flow.semTimes ? flow.presentes : flow.times.flat();
   const peladaJogadores = [];
 
   for (const id of todosNoSorteio) {
@@ -2458,11 +2711,15 @@ async function salvarStats() {
   const elapsesAt = Date.now() + 24 * 60 * 60 * 1000; // 24h from now
   const elegiveisVotar = presentes.map(p => p.id); // only players who played can vote
 
+  // Convert nested arrays to Firestore-compatible objects
+  const timesObjRec = {};
+  flow.times.forEach((t, i) => { timesObjRec['t' + i] = t; });
+
   const peladaRec = {
     id: peladaId,
     data,
     savedAt: Date.now(),
-    times: flow.times,
+    times: flow.semTimes ? {} : timesObjRec,
     jogadores: peladaJogadores,
     mvp: null,
     podio: null,
@@ -3013,20 +3270,17 @@ function sairDaConta() {
   currentUser = null;
   document.getElementById('appShell').style.display = 'none';
   showLogin(true);
-  document.getElementById('loginNome').value = '';
+  voltarLogin(); // reset login card to initial state
 }
-window.sairDaConta = sairDaConta;
-window.abrirUploadFoto = abrirUploadFoto;
-window.confirmarSenha = confirmarSenha;
-window.voltarLogin = voltarLogin;
 
-// ─── TOAST ───────────────────────────────────────────────────
+
 function showToast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);}
 
 // ─── EXPOSE ──────────────────────────────────────────────────
 window.salvarFirebaseConfig=salvarFirebaseConfig;
 window.usarSemFirebase=usarSemFirebase;
 window.entrar=entrar;
+window.entrarComoVisitante=entrarComoVisitante;
 window.goTo=goTo;
 window.startFlow=startFlow;
 window.closeFlow=closeFlow;
@@ -3052,6 +3306,8 @@ window.toggleAdmin=toggleAdmin;
 window.toggleP=toggleP;
 window.toggleAusente=toggleAusente;
 window.confirmarPresentes=confirmarPresentes;
+window.ajustarParaProximo=ajustarParaProximo;
+window.confirmarListaSemTimes=confirmarListaSemTimes;
 window.confirmarAusentes=confirmarAusentes;
 window.resortear=resortear;
 window.cancelarSorteio=cancelarSorteio;
