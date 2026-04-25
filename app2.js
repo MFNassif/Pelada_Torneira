@@ -98,6 +98,8 @@ async function boot() {
   localStorage.setItem(LS_USER, JSON.stringify(currentUser));
   // Auto-check: remove avulsos não pagos após sáb 12h
   await checkAvulsosInadimplentes();
+  // Auto-check: cancela pelada se < 12 confirmados a menos de 24h
+  await checkCancelamentoPelada();
   showApp();
 }
 
@@ -1045,6 +1047,81 @@ async function checkAvulsosInadimplentes() {
   }
 }
 
+async function checkCancelamentoPelada() {
+  // Roda no boot. Se a lista de presença existir, tiver data marcada,
+  // estiver a menos de 24h da pelada E tiver menos de 12 confirmados
+  // → cancela automaticamente, emite comunicado e abre lista pro próximo domingo.
+
+  const p = appData.presenca;
+  if (!p?.data) return; // sem lista ativa, nada a fazer
+
+  const confirmados = p.confirmados || [];
+  const peladaDate = parsePeladaDate(p.data);
+  if (!peladaDate) return;
+
+  const now = Date.now();
+  const h24 = 24 * 60 * 60 * 1000;
+  const dentro24h = (peladaDate - now) < h24;
+  const jaNaoAconteceu = peladaDate > now; // ainda no futuro
+
+  if (!dentro24h || !jaNaoAconteceu) return; // fora da janela
+  if (confirmados.length >= 12) return;      // confirmados suficientes
+
+  // Verificar se já foi cancelado (evita comunicado duplicado a cada boot)
+  const jaCancelou = (appData.comunicados || []).some(c =>
+    c.auto === 'cancelamento' && c.texto?.includes(p.data)
+  );
+  if (jaCancelou) return;
+
+  // ── Emitir comunicado automático ──────────────────────────
+  const proximoDomingo = getProximoDomingoApos(p.data);
+  const comId = 'com_cancel_' + Date.now();
+  const com = {
+    id: comId,
+    titulo: '⚠️ PELADA CANCELADA',
+    texto: `A pelada de ${p.data} foi cancelada por falta de quórum mínimo (${confirmados.length}/12 confirmados).\n\nA lista para o próximo domingo (${proximoDomingo}) já está aberta. Confirme sua presença!`,
+    autor: 'Sistema',
+    criadoEm: Date.now(),
+    auto: 'cancelamento',
+  };
+  if (!appData.comunicados) appData.comunicados = [];
+  appData.comunicados.unshift(com);
+  await firestoreSet('comunicados', comId, com);
+
+  // ── Cancelar débitos de avulso gerados por esta lista ──────
+  for (const uid of confirmados) {
+    if (jogadorMensalista(uid)) continue;
+    const fin = getFinancasJogador(uid);
+    if (!fin.debitos) continue;
+    let changed = false;
+    fin.debitos.forEach(d => {
+      if (d.tipo === 'avulso' && !d.quitado && d.descricao?.includes(p.data)) {
+        d.quitado = true; // cancela — não vai jogar
+        changed = true;
+      }
+    });
+    if (changed) {
+      await firestoreSet('financas', uid, fin);
+    }
+  }
+
+  // ── Abrir nova lista para o próximo domingo ─────────────
+  const novaPresenca = { confirmados: [], espera: [], data: proximoDomingo };
+  appData.presenca = novaPresenca;
+  await firestoreSet('config', 'presenca', novaPresenca);
+
+  saveLocal();
+}
+
+function getProximoDomingoApos(dataStr) {
+  // Retorna o domingo seguinte ao dataStr (dd/mm/yyyy)
+  const base = parsePeladaDate(dataStr);
+  if (!base) return getProximoDomingo();
+  const d = new Date(base);
+  d.setDate(d.getDate() + 7);
+  return d.toLocaleDateString('pt-BR');
+}
+
 async function gerarMultasAusencia(ausentes, peladaData) {
   // Chamada ao finalizar partida para gerar multas dos ausentes
   for (const uid of ausentes) {
@@ -1196,17 +1273,27 @@ async function adminAdicionarPresenca(lista) {
 async function adminBaixaAvulsoPresenca(jogadorId) {
   const j = appData.jogadores.find(x=>x.id===jogadorId);
   if (!j) return;
-  const sorteioData = appData.ultimoSorteio?.data || appData.presenca?.data || '';
+  const sorteioData = appData.presenca?.data || appData.ultimoSorteio?.data || '';
   const fin = getFinancasJogador(jogadorId);
-  // Find the avulso debt for this pelada
+  // Encontra o débito de avulso desta pelada não quitado
   const debito = (fin.debitos||[]).find(d =>
-    d.tipo==='avulso' && d.descricao?.includes(sorteioData)
+    d.tipo==='avulso' && !d.quitado && d.descricao?.includes(sorteioData)
   );
   if (!debito) { showToast('Débito não encontrado'); return; }
-  const valor = debito.valor;
-  const dataHoje = new Date().toLocaleDateString('pt-BR');
-  await darBaixaComData(jogadorId, valor, `Baixa avulso — Pelada ${sorteioData}`, dataHoje);
-  showToast(`✅ Baixa de R$${valor} registrada para ${j.nome}`);
+  // Marca o débito como quitado individualmente
+  debito.quitado = true;
+  // Registra o pagamento também (histórico financeiro)
+  if (!fin.pagamentos) fin.pagamentos = [];
+  fin.pagamentos.push({
+    id: 'p'+Date.now(),
+    valor: debito.valor,
+    descricao: `Avulso pago — Pelada ${sorteioData}`,
+    data: new Date().toLocaleDateString('pt-BR')
+  });
+  appData.financas[jogadorId] = fin;
+  await firestoreSet('financas', jogadorId, fin);
+  saveLocal();
+  showToast(`✅ R$${debito.valor} pago — ${j.nome}`);
   document.getElementById('modalAdminPresenca')?.remove();
   abrirAdminPresenca();
   renderPresenca();
@@ -1949,6 +2036,7 @@ function renderJogs() {
     const isAdm=(appData.admins||[]).includes(j.id);
     const ifStr=nd>0?ix?.IF.toFixed(2):null;
     const isOnline = currentUser?.id === j.id;
+    const temConta = !!j.senha;
     return `
     <div class="prow" onclick="openPerfil('${j.id}')">
       <div class="p-avatar" style="${j.foto?'padding:0;overflow:hidden':''}${isOnline?';border-color:var(--gold)':''}">
@@ -1956,7 +2044,9 @@ function renderJogs() {
       </div>
       <div class="p-info">
         <div class="p-name">${j.nome}${isAdm?'<span class="badge-adm">ADMIN</span>':''}</div>
-        <div class="p-meta">Nota: ${j.nota?.toFixed(1)} · ${nd} domingo${nd!==1?'s':''}</div>
+        <div class="p-meta">Nota: ${j.nota?.toFixed(1)} · ${nd} domingo${nd!==1?'s':''}
+          · <span style="color:${temConta?'#22c55e':'#94a3b8'};font-size:10px">${temConta?'✅ conta':'⬜ sem conta'}</span>
+        </div>
       </div>
       <div style="display:flex;align-items:center;gap:7px">
         <div class="${ifStr?'p-if':'p-if empty'}">${ifStr||'—'}</div>
@@ -2483,35 +2573,58 @@ async function executarRemoverDomingo(jogadorId, idx, modo) {
 
 // ─── FOTO DE PERFIL ──────────────────────────────────────────
 async function abrirUploadFoto(jogadorId) {
-  if (currentUser?.id !== jogadorId && !currentUser?.isAdmin) { showToast('Sem permissão'); return; }
+  // Se não passar ID, usa o do usuário atual
+  const targetId = jogadorId || currentUser?.id;
+  if (!targetId) { showToast('Nenhum jogador identificado'); return; }
+  if (currentUser?.id !== targetId && !currentUser?.isAdmin) { showToast('Sem permissão'); return; }
+
+  // Fecha menu flutuante se aberto
+  document.getElementById('userFloatMenu')?.remove();
+
+  // Verifica se o jogador está cadastrado
+  const j = appData.jogadores.find(x => x.id === targetId);
+  if (!j) { showToast('Jogador não cadastrado no sistema'); return; }
+
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = 'image/*';
+  input.style.display = 'none';
+  document.body.appendChild(input);
+
   input.onchange = async (e) => {
     const file = e.target.files[0];
+    document.body.removeChild(input);
     if (!file) return;
-    if (file.size > 2 * 1024 * 1024) { showToast('Foto muito grande (máx 2MB)'); return; }
-    showToast('Enviando foto...');
+    if (file.size > 5 * 1024 * 1024) { showToast('Foto muito grande (máx 5MB)'); return; }
+    showToast('Processando foto...');
     const reader = new FileReader();
     reader.onload = async (ev) => {
-      const base64 = ev.target.result;
-      const j = appData.jogadores.find(x => x.id === jogadorId);
-      if (!j) return;
-      const resized = await resizeImage(base64, 200);
-      j.foto = resized;
-      await firestoreSet('jogadores', jogadorId, j);
-      if (currentUser?.id === jogadorId) {
-        currentUser.foto = resized;
-        localStorage.setItem(LS_USER, JSON.stringify(currentUser));
-        const hAvatar = document.getElementById('hAvatar');
-        hAvatar.innerHTML = `<img src="${resized}" style="width:100%;height:100%;border-radius:50%;object-fit:cover">`;
+      try {
+        const base64 = ev.target.result;
+        const resized = await resizeImage(base64, 300);
+        j.foto = resized;
+        await firestoreSet('jogadores', targetId, j);
+        // Atualiza estado local do usuário logado
+        if (currentUser?.id === targetId) {
+          currentUser.foto = resized;
+          localStorage.setItem(LS_USER, JSON.stringify(currentUser));
+          const hAvatar = document.getElementById('hAvatar');
+          if (hAvatar) hAvatar.innerHTML = `<img src="${resized}" style="width:100%;height:100%;border-radius:50%;object-fit:cover">`;
+        }
+        saveLocal();
+        showToast('✅ Foto atualizada!');
+        // Atualiza a tela atual
+        if (curScreen === 'jogadores') renderJogs();
+        else openPerfil(targetId);
+      } catch(err) {
+        showToast('Erro ao salvar foto. Tente uma imagem menor.');
       }
-      saveLocal();
-      showToast('Foto atualizada! ✅');
-      openPerfil(jogadorId);
     };
+    reader.onerror = () => showToast('Erro ao ler o arquivo');
     reader.readAsDataURL(file);
   };
+
+  input.oncancel = () => { document.body.removeChild(input); };
   input.click();
 }
 
