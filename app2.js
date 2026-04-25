@@ -1062,8 +1062,9 @@ function renderPeladasHistorico() {
         (j.domingos||[]).some(d => d.data === data && !d.ausente)
       ).length;
 
+      const clickFn = p ? `openPeladaDetalhe('${p.id}')` : `openPeladaDetalheByData('${data}')`;
       return `
-      <div class="pelada-hist-card" onclick="${p ? `openPeladaDetalhe('${p.id}')` : ''}" style="cursor:${p?'pointer':'default'};${podeVotar?'border-color:rgba(234,179,8,.5);':''}">
+      <div class="pelada-hist-card" onclick="${clickFn}" style="cursor:pointer;${podeVotar?'border-color:rgba(234,179,8,.5);':''}">
         <div style="display:flex;align-items:center;gap:10px">
           <div style="font-size:18px">${podeVotar?'⭐':'🏆'}</div>
           <div style="flex:1">
@@ -1078,6 +1079,7 @@ function renderPeladasHistorico() {
           <div style="display:flex;align-items:center;gap:6px">
             ${isAdmin && p && votAberta ? `<button onclick="event.stopPropagation();encerrarVotacaoForce('${p.id}')" style="background:rgba(234,179,8,.15);border:1px solid rgba(234,179,8,.3);border-radius:8px;color:#eab308;font-size:11px;padding:4px 10px;cursor:pointer;font-family:'DM Sans',sans-serif">⚡ MVP</button>` : ''}
             ${isAdmin && p ? `<button onclick="event.stopPropagation();excluirPelada('${p.id}')" style="background:rgba(255,68,68,.1);border:1px solid rgba(255,68,68,.2);border-radius:8px;color:#ef4444;font-size:11px;padding:4px 10px;cursor:pointer;font-family:'DM Sans',sans-serif">🗑️</button>` : ''}
+            ${isAdmin && !p ? `<button onclick="event.stopPropagation();excluirPeladaPorData('${data}')" style="background:rgba(255,68,68,.1);border:1px solid rgba(255,68,68,.2);border-radius:8px;color:#ef4444;font-size:11px;padding:4px 10px;cursor:pointer;font-family:'DM Sans',sans-serif">🗑️</button>` : ''}
             <div style="color:${podeVotar?'#eab308':'var(--t3)'};font-size:16px">${podeVotar?'VOTAR':'›'}</div>
           </div>
         </div>
@@ -1272,6 +1274,69 @@ function openPeladaDetalhe(peladaId) {
   openModal('modalPeladaDetalhe');
 }
 window.openPeladaDetalhe = openPeladaDetalhe;
+// ─── DETALHE POR DATA (sem peladaHist) ───────────────────────
+function openPeladaDetalheByData(data) {
+  // Collect all players who have a domingo entry for this date
+  const jogadoresNaData = appData.jogadores
+    .map(j => {
+      const dom = (j.domingos||[]).find(d => d.data === data);
+      if (!dom || dom.ausente) return null;
+      const scoreDia = (dom.gols||0) + (dom.assists||0) + 0.75*(dom.vitorias||0);
+      return { id: j.id, nome: j.nome, gols: dom.gols||0, assists: dom.assists||0, vitorias: dom.vitorias||0, scoreDia };
+    })
+    .filter(Boolean)
+    .sort((a,b) => b.scoreDia - a.scoreDia);
+
+  if (!jogadoresNaData.length) { showToast('Nenhuma estatística encontrada para esta data'); return; }
+
+  const rowsHTML = jogadoresNaData.map((j, i) => {
+    const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':`#${i+1}`;
+    return `
+    <div class="prow rank-row">
+      <div class="rank-row-top">
+        <div class="rank-n ${i===0?'g':i===1?'s':i===2?'b':''}">${medal}</div>
+        <div class="rank-name-col"><div class="p-name">${j.nome}</div></div>
+      </div>
+      <div class="rank-stats-row">
+        <div class="rank-stat"><div class="rs-v">${j.scoreDia.toFixed(2)}</div><div class="rs-l">Score</div></div>
+        <div class="rank-stat"><div class="rs-v">${j.gols}</div><div class="rs-l">⚽</div></div>
+        <div class="rank-stat"><div class="rs-v">${j.assists}</div><div class="rs-l">🎯</div></div>
+        <div class="rank-stat"><div class="rs-v">${j.vitorias}</div><div class="rs-l">🏆</div></div>
+      </div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('peladaDetalheTitle').textContent = `PELADA ${data}`;
+  const delBtn = document.getElementById('btnExcluirPelada');
+  if (delBtn) {
+    delBtn.style.display = currentUser?.isAdmin ? 'block' : 'none';
+    delBtn.onclick = () => excluirPeladaPorData(data);
+  }
+  document.getElementById('peladaDetalheMvp').innerHTML = `
+    <div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:12px;color:var(--t2)">
+      📋 Pelada registrada manualmente — sem sorteio pelo app
+    </div>`;
+  document.getElementById('peladaDetalheList').innerHTML =
+    `<div class="section-lbl" style="margin-top:4px">ESTATÍSTICAS COMPLETAS</div>` + rowsHTML;
+  openModal('modalPeladaDetalhe');
+}
+window.openPeladaDetalheByData = openPeladaDetalheByData;
+
+async function excluirPeladaPorData(data) {
+  if (!currentUser?.isAdmin) return;
+  const jogadoresComData = appData.jogadores.filter(j => (j.domingos||[]).some(d => d.data === data));
+  if (!confirm(`Excluir pelada de ${data}? Remove estatísticas de ${jogadoresComData.length} jogadores.`)) return;
+  if (!confirm('Tem certeza? Esta ação não pode ser desfeita.')) return;
+  for (const j of jogadoresComData) {
+    j.domingos = (j.domingos||[]).filter(d => d.data !== data);
+    await firestoreSet('jogadores', j.id, j);
+  }
+  closeModal('modalPeladaDetalhe');
+  renderPeladasHistorico();
+  showToast(`Pelada de ${data} excluída`);
+}
+window.excluirPeladaPorData = excluirPeladaPorData;
+
 
 async function excluirPelada(peladaId) {
   if (!currentUser?.isAdmin) return;
