@@ -1501,7 +1501,7 @@ async function removerDomingo(jogadorId, idx) {
 
 
 // ─── FOTO DE PERFIL ──────────────────────────────────────────
-function abrirUploadFoto(jogadorId) {
+async function abrirUploadFoto(jogadorId) {
   if (currentUser?.id !== jogadorId && !currentUser?.isAdmin) { showToast('Sem permissão'); return; }
   const input = document.createElement('input');
   input.type = 'file';
@@ -1682,7 +1682,7 @@ function startFlow() {
   document.getElementById('inputDataSorteio').value = new Date().toLocaleDateString('pt-BR');
 }
 
-function confirmarDataSorteio() {
+async function confirmarDataSorteio() {
   const data = document.getElementById('inputDataSorteio').value.trim();
   if (!data) { showToast('Informe a data da pelada'); return; }
   closeModal('modalDataSorteio');
