@@ -421,13 +421,16 @@ async function adicionarDebitoComData(jogadorId, tipo, valor, descricao, data) {
 }
 
 async function darBaixa(jogadorId, valor, descricao) {
+  return darBaixaComData(jogadorId, valor, descricao, new Date().toLocaleDateString('pt-BR'));
+}
+
+async function darBaixaComData(jogadorId, valor, descricao, data) {
   const fin = getFinancasJogador(jogadorId);
   if (!fin.pagamentos) fin.pagamentos = [];
-  fin.pagamentos.push({ id: 'p'+Date.now(), valor, descricao, data: new Date().toLocaleDateString('pt-BR') });
+  fin.pagamentos.push({ id: 'p'+Date.now(), valor, descricao, data });
   appData.financas[jogadorId] = fin;
   await firestoreSet('financas', jogadorId, fin);
   saveLocal();
-  showToast('Pagamento registrado ✅');
 }
 
 // Feriados nacionais fixos [dia, mes] (1-indexed)
@@ -467,6 +470,48 @@ function get5DiasUteis() {
     return new Date(proxAno, proxMes, dia5duProx);
   }
   return prazo;
+}
+
+function getPeriodoMensalidade() {
+  // Returns { inicio, prazo, inicioPt, prazoPt } for the current billing period
+  // Period start = day after last 5du, Period end = next 5du (deadline)
+  const hoje = new Date();
+  hoje.setHours(0,0,0,0);
+
+  const mesHoje = hoje.getMonth();   // 0-indexed
+  const anoHoje = hoje.getFullYear();
+
+  // 5du of current month
+  const dia5duAtual = calc5DiasUteis(mesHoje, anoHoje);
+  const prazo5duAtual = new Date(anoHoje, mesHoje, dia5duAtual);
+  prazo5duAtual.setHours(23,59,59,999);
+
+  let inicioPeriodo, prazoPeriodo;
+
+  if (hoje <= prazo5duAtual) {
+    // Still within this month's deadline
+    // Period start = day after last month's 5du
+    const mesAnt = mesHoje === 0 ? 11 : mesHoje - 1;
+    const anoAnt = mesHoje === 0 ? anoHoje - 1 : anoHoje;
+    const dia5duAnt = calc5DiasUteis(mesAnt, anoAnt);
+    inicioPeriodo = new Date(anoAnt, mesAnt, dia5duAnt + 1);
+    prazoPeriodo = prazo5duAtual;
+  } else {
+    // Past this month's deadline — current period is from day after 5du_atual to next month's 5du
+    inicioPeriodo = new Date(anoHoje, mesHoje, dia5duAtual + 1);
+    const proxMes = mesHoje === 11 ? 0 : mesHoje + 1;
+    const proxAno = mesHoje === 11 ? anoHoje + 1 : anoHoje;
+    const dia5duProx = calc5DiasUteis(proxMes, proxAno);
+    prazoPeriodo = new Date(proxAno, proxMes, dia5duProx);
+    prazoPeriodo.setHours(23,59,59,999);
+  }
+
+  return {
+    inicio: inicioPeriodo,
+    prazo: prazoPeriodo,
+    inicioPt: inicioPeriodo.toLocaleDateString('pt-BR'),
+    prazoPt: prazoPeriodo.toLocaleDateString('pt-BR'),
+  };
 }
 
 function getMesReferencia() {
@@ -791,13 +836,14 @@ function renderPresenca() {
 async function checkMensalidadeAtual() {
   // Auto-gera débito de mensalidade para o mês atual se ainda não existe
   const mesRef = getMesReferencia();
+  const data5du = getUltimo5du();
   const mensalistas = appData.jogadores.filter(j => j.tipoJogador === 'mensalista');
   let gerou = false;
   for (const j of mensalistas) {
     const fin = getFinancasJogador(j.id);
     const jaTemEsseMes = (fin.debitos||[]).some(d => d.tipo==='mensal' && d.descricao?.includes(mesRef));
     if (!jaTemEsseMes) {
-      await adicionarDebito(j.id, 'mensal', 80, `Mensalidade ${mesRef}`);
+      await adicionarDebitoComData(j.id, 'mensal', 80, `Mensalidade ${mesRef}`, data5du);
       gerou = true;
     }
   }
@@ -2422,10 +2468,13 @@ function renderFinancas() {
   const cont = document.getElementById('sc-financas');
   if (!cont) return;
 
-  const prazo5du = get5DiasUteis();
+  const periodo = getPeriodoMensalidade();
+  const prazo5du = periodo.prazo;
   const hoje = new Date();
-  const atrasado5du = hoje > prazo5du;
-  const prazoStr = prazo5du.toLocaleDateString('pt-BR');
+  hoje.setHours(0,0,0,0);
+  const atrasado5du = semanasAtraso5du() > 0;
+  const prazoStr = periodo.prazoPt;
+  const inicioStr = periodo.inicioPt;
 
   const jogadores = appData.jogadores;
   const isAdmin = currentUser?.isAdmin;
@@ -2463,18 +2512,20 @@ function renderFinancas() {
   const icone = atrasado5du && temInadimplenteMensal ? '⚠️' : '📅';
   const avisoAtrasado = mostrarAtraso ? ` — ${semanas} sem. em atraso (+R$${(semanas*5).toFixed(0)})` : '';
   const aviso5du = `<div style="background:${corAviso};border:1px solid ${corBorda};border-radius:10px;padding:12px 14px;margin-bottom:16px">
-    <div style="font-size:13px;font-weight:700;color:${corTexto}">${icone} MENSALISTAS: Pagamento até ${prazoStr}${avisoAtrasado}</div>
-    <div style="font-size:11px;color:var(--t2);margin-top:3px">R$80,00 via Pix: mfnassif16@gmail.com</div>
+    <div style="font-size:13px;font-weight:700;color:${corTexto}">${icone} MENSALISTAS: Período ${inicioStr} → ${prazoStr}${avisoAtrasado}</div>
+    <div style="font-size:11px;color:var(--t2);margin-top:3px">R$80,00 via Pix: mfnassif16@gmail.com · Vencimento: ${prazoStr}</div>
     ${isAdmin ? `<button onclick="gerarMensalidadesMes()" style="margin-top:8px;background:var(--gold-dim);border:1px solid var(--border-gold);border-radius:8px;color:var(--gold);font-family:'Oswald',sans-serif;font-size:12px;letter-spacing:1px;padding:6px 14px;cursor:pointer;width:100%">📋 GERAR MENSALIDADES DO MÊS</button>` : ''}
   </div>`;
 
   const renderRow = (r) => {
     const { j, saldo, fin, mensalista, multas, avulsos, mensais } = r;
     const cor = saldo > 0 ? '#ef4444' : '#22c55e';
+    const outros = debitos.filter(d=>d.tipo==='outro');
     const debitosDesc = [
       ...mensais.map(d=>`Mensalidade ${d.data}: R$${d.valor}`),
       ...avulsos.map(d=>`Avulso ${d.descricao}: R$${d.valor}`),
-      ...multas.map(d=>`Multa ${d.data}: R$${d.valor} — ${d.descricao}`)
+      ...multas.map(d=>`Multa ${d.data}: R$${d.valor} — ${d.descricao}`),
+      ...outros.map(d=>`${d.descricao||'Outro'} (${d.data}): R$${d.valor}`)
     ].join('<br>');
 
     return `
@@ -2512,7 +2563,17 @@ function renderFinancas() {
 
 function abrirDarBaixa(jogadorId) {
   const j = appData.jogadores.find(x=>x.id===jogadorId);
+  const fin = getFinancasJogador(jogadorId);
   const saldo = totalDebitoJogador(jogadorId);
+  const debitos = (fin.debitos||[]);
+  // Build list of unpaid debts
+  const totalPago = (fin.pagamentos||[]).reduce((s,p)=>s+(p.valor||0),0);
+  let acumulado = 0;
+  const debitosAbertos = debitos.map((d,i) => {
+    const desc = d.descricao || d.tipo;
+    return { i, desc, valor: d.valor, data: d.data, tipo: d.tipo };
+  });
+
   const overlay = document.createElement('div');
   overlay.className = 'overlay open';
   overlay.id = 'modalDarBaixa';
@@ -2520,9 +2581,22 @@ function abrirDarBaixa(jogadorId) {
     <div class="modal">
       <div class="mhandle"></div>
       <div class="m-title">DAR BAIXA</div>
-      <div class="m-sub">${j?.nome} · Saldo: R$${saldo.toFixed(2)}</div>
-      <div class="field"><label>Valor pago (R$)</label><input class="input" id="baixaValor" type="number" step="0.01" min="0" placeholder="80.00" value="${saldo}"></div>
-      <div class="field"><label>Descrição</label><input class="input" id="baixaDesc" placeholder="Mensalidade março" value="Pagamento"></div>
+      <div class="m-sub">${j?.nome} · Saldo devedor: R$${saldo.toFixed(2)}</div>
+      <div class="field">
+        <label>Selecione o débito</label>
+        <select class="input" id="baixaDebitoIdx" onchange="atualizarValorBaixa('${jogadorId}')">
+          <option value="-1">— Escolha um débito —</option>
+          ${debitosAbertos.map(d => `<option value="${d.i}">${d.desc} — R$${d.valor.toFixed(2)} (${d.data})</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label>Valor pago (R$)</label>
+        <input class="input" id="baixaValor" type="number" step="0.01" min="0" placeholder="80.00">
+      </div>
+      <div class="field">
+        <label>Data do pagamento</label>
+        <input class="input" id="baixaDataPag" type="date" value="${new Date().toISOString().split('T')[0]}">
+      </div>
       <button class="btn btn-gold" onclick="executarBaixa('${jogadorId}')">REGISTRAR PAGAMENTO</button>
       <button class="btn btn-ghost mt8" onclick="document.getElementById('modalDarBaixa').remove()">CANCELAR</button>
     </div>`;
@@ -2530,13 +2604,33 @@ function abrirDarBaixa(jogadorId) {
   document.body.appendChild(overlay);
 }
 
+function atualizarValorBaixa(jogadorId) {
+  const sel = document.getElementById('baixaDebitoIdx');
+  const idx = parseInt(sel?.value);
+  if (isNaN(idx) || idx < 0) return;
+  const fin = getFinancasJogador(jogadorId);
+  const debito = fin.debitos?.[idx];
+  if (debito) document.getElementById('baixaValor').value = debito.valor.toFixed(2);
+}
+
 async function executarBaixa(jogadorId) {
+  const sel = document.getElementById('baixaDebitoIdx');
+  const idx = parseInt(sel?.value);
+  if (isNaN(idx) || idx < 0) { showToast('Selecione um débito'); return; }
   const val = parseFloat(document.getElementById('baixaValor')?.value);
-  const desc = document.getElementById('baixaDesc')?.value?.trim() || 'Pagamento';
+  const dataInput = document.getElementById('baixaDataPag')?.value;
   if (isNaN(val) || val <= 0) { showToast('Valor inválido'); return; }
-  await darBaixa(jogadorId, val, desc);
+  const fin = getFinancasJogador(jogadorId);
+  const debito = fin.debitos?.[idx];
+  if (!debito) { showToast('Débito não encontrado'); return; }
+  const dataFmt = dataInput
+    ? new Date(dataInput + 'T12:00:00').toLocaleDateString('pt-BR')
+    : new Date().toLocaleDateString('pt-BR');
+  const desc = `Baixa: ${debito.descricao || debito.tipo}`;
+  await darBaixaComData(jogadorId, val, desc, dataFmt);
   document.getElementById('modalDarBaixa')?.remove();
   renderFinancas();
+  showToast('Pagamento registrado ✅');
 }
 
 function abrirAddDebito(jogadorId) {
@@ -2655,18 +2749,25 @@ async function removerPagamentoIdx(jogadorId, idx) {
 }
 
 // ─── GERAR MENSALIDADES (admin) ──────────────────────────────
+function getUltimo5du() {
+  // Returns the 5du of the current month as a formatted date string
+  const hoje = new Date();
+  const dia5du = calc5DiasUteis(hoje.getMonth(), hoje.getFullYear());
+  return new Date(hoje.getFullYear(), hoje.getMonth(), dia5du).toLocaleDateString('pt-BR');
+}
+
 async function gerarMensalidadesMes() {
   if (!currentUser?.isAdmin) return;
-  const mes = new Date().toLocaleString('pt-BR',{month:'long',year:'numeric'});
+  const mes = getMesReferencia();
+  const data5du = getUltimo5du();
   if (!confirm(`Gerar débito de mensalidade (R$80) para todos os mensalistas — ${mes}?`)) return;
   const mensalistas = appData.jogadores.filter(j => j.tipoJogador === 'mensalista');
   let count = 0;
   for (const j of mensalistas) {
-    // Check if already has this month's mensal
     const fin = getFinancasJogador(j.id);
     const jaTemEsseMes = (fin.debitos||[]).some(d => d.tipo==='mensal' && d.descricao?.includes(mes));
     if (!jaTemEsseMes) {
-      await adicionarDebito(j.id, 'mensal', 80, `Mensalidade ${mes}`);
+      await adicionarDebitoComData(j.id, 'mensal', 80, `Mensalidade ${mes}`, data5du);
       count++;
     }
   }
@@ -2676,6 +2777,7 @@ async function gerarMensalidadesMes() {
 window.gerarMensalidadesMes = gerarMensalidadesMes;
 window.checkMensalidadeAtual = checkMensalidadeAtual;
 window.abrirEditarNota = abrirEditarNota;
+window.atualizarValorBaixa = atualizarValorBaixa;
 window.salvarNotaEdit = salvarNotaEdit;
 window.toggleAdminPerfil = toggleAdminPerfil;
 window.toggleMensalistaPerfil = toggleMensalistaPerfil;
