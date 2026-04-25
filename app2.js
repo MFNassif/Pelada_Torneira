@@ -81,6 +81,7 @@ window.addEventListener('DOMContentLoaded', boot);
 async function boot() {
   useFirebase = true;
   initFB(FIREBASE_CONFIG);
+  initFotoInput(); // registra handler do input permanente de foto
   await loadData();
   const su = localStorage.getItem(LS_USER);
   if (!su) { showLogin(true); voltarLogin(); return; }
@@ -2045,7 +2046,7 @@ function renderJogs() {
       <div class="p-info">
         <div class="p-name">${j.nome}${isAdm?'<span class="badge-adm">ADMIN</span>':''}</div>
         <div class="p-meta">Nota: ${j.nota?.toFixed(1)} · ${nd} domingo${nd!==1?'s':''}
-          · <span style="color:${temConta?'#22c55e':'#94a3b8'};font-size:10px">${temConta?'✅ conta':'⬜ sem conta'}</span>
+          · <span style="color:${temConta?'#22c55e':'#94a3b8'};font-size:13px" title="${temConta?'Conta ativa':'Sem conta'}">${temConta?'🟩':'⬜'}</span>
         </div>
       </div>
       <div style="display:flex;align-items:center;gap:7px">
@@ -2572,29 +2573,22 @@ async function executarRemoverDomingo(jogadorId, idx, modo) {
 
 
 // ─── FOTO DE PERFIL ──────────────────────────────────────────
-function abrirUploadFoto(jogadorId) {
-  // ⚠️ Deve ser síncrono: browsers mobile bloqueiam input.click() após qualquer await
-  const targetId = jogadorId || currentUser?.id;
-  if (!targetId) { showToast('Nenhum jogador identificado'); return; }
-  if (currentUser?.id !== targetId && !currentUser?.isAdmin) { showToast('Sem permissão'); return; }
-  const j = appData.jogadores.find(x => x.id === targetId);
-  if (!j) { showToast('Jogador não cadastrado'); return; }
+// Target do upload atual (síncrono, salvo antes do .click())
+let _fotoUploadTarget = null;
 
-  // Fecha menu flutuante ANTES de criar o input (síncrono)
-  document.getElementById('userFloatMenu')?.remove();
-
-  // Cria e clica IMEDIATAMENTE — sem nenhum await antes deste ponto
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = 'image/*;capture=camera';
-  input.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0';
-  document.body.appendChild(input);
-
-  input.addEventListener('change', async () => {
-    const file = input.files[0];
-    document.body.removeChild(input);
-    if (!file) return;
-    if (file.size > 10 * 1024 * 1024) { showToast('Foto muito grande (máx 10MB)'); return; }
+// Inicializa o handler do input permanente (chamado uma vez no boot)
+function initFotoInput() {
+  const inp = document.getElementById('fotoInputGlobal');
+  if (!inp) return;
+  inp.addEventListener('change', async () => {
+    const file = inp.files[0];
+    inp.value = ''; // reset para permitir reescolha da mesma foto
+    const targetId = _fotoUploadTarget;
+    _fotoUploadTarget = null;
+    if (!file || !targetId) return;
+    const j = appData.jogadores.find(x => x.id === targetId);
+    if (!j) return;
+    if (file.size > 15 * 1024 * 1024) { showToast('Foto muito grande (máx 15MB)'); return; }
     showToast('Processando foto...');
     try {
       const base64 = await new Promise((res, rej) => {
@@ -2618,16 +2612,29 @@ function abrirUploadFoto(jogadorId) {
       else openPerfil(targetId);
     } catch(err) {
       console.error('Erro foto:', err);
-      showToast('Erro ao salvar. Tente uma imagem menor.');
+      showToast('Erro ao salvar. Tente novamente.');
     }
   });
+}
 
-  // Limpa se cancelar sem escolher arquivo
-  input.addEventListener('cancel', () => {
-    try { document.body.removeChild(input); } catch(_) {}
-  });
+function abrirUploadFoto(jogadorId) {
+  // ⚠️ SÍNCRONO: nenhum await antes do .click() — exigência do mobile
+  const targetId = jogadorId || currentUser?.id;
+  if (!targetId) { showToast('Nenhum jogador identificado'); return; }
+  if (currentUser?.id !== targetId && !currentUser?.isAdmin) { showToast('Sem permissão'); return; }
+  const j = appData.jogadores.find(x => x.id === targetId);
+  if (!j) { showToast('Jogador não cadastrado'); return; }
 
-  input.click(); // deve ser a última linha antes do return
+  document.getElementById('userFloatMenu')?.remove();
+
+  // Salva o alvo de forma síncrona antes do click
+  _fotoUploadTarget = targetId;
+
+  // Usa o input permanente do DOM (evita bloqueio mobile com createElement)
+  const inp = document.getElementById('fotoInputGlobal');
+  if (!inp) { showToast('Erro ao abrir câmera'); return; }
+  inp.value = '';
+  inp.click(); // última instrução — sem nada async antes
 }
 
 function resizeImage(base64, maxSize) {
@@ -3529,8 +3536,7 @@ function renderFinancas() {
   const valoresAtualCfg = `
     <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
       <button onclick="abrirConfigValores()" style="background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--t2);padding:6px 12px;cursor:pointer;display:flex;align-items:center;gap:6px;font-size:12px;font-family:'DM Sans',sans-serif" title="Configurar valores">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
-        Valores
+        ⚙️ Valores
       </button>
     </div>`;
 
@@ -3539,9 +3545,10 @@ function renderFinancas() {
     const fin = getFinancasJogador(j.id);
     const mensalista = jogadorMensalista(j.id);
     const debitos = (fin.debitos||[]);
-    const multas = debitos.filter(d=>d.tipo==='multa');
-    const mensais = debitos.filter(d=>d.tipo==='mensal');
-    const avulsos = debitos.filter(d=>d.tipo==='avulso');
+    const debitosAtivos = debitos.filter(d => !d.quitado); // só pendentes
+    const multas = debitosAtivos.filter(d=>d.tipo==='multa');
+    const mensais = debitosAtivos.filter(d=>d.tipo==='mensal');
+    const avulsos = debitosAtivos.filter(d=>d.tipo==='avulso');
     return { j, saldo, fin, mensalista, multas, mensais, avulsos, debitos };
   }).sort((a,b) => {
     // 1. Mensalistas first
@@ -3582,13 +3589,14 @@ function renderFinancas() {
   const renderRow = (r) => {
     const { j, saldo, fin, mensalista, multas, avulsos, mensais, debitos } = r;
     const cor = saldo > 0 ? '#ef4444' : '#22c55e';
-    const outros = debitos.filter(d=>d.tipo==='outro');
-    const debitosDesc = [
+    // Só mostra descrição de débitos ATIVOS (não quitados)
+    const outros = debitos.filter(d=>d.tipo==='outro' && !d.quitado);
+    const debitosDesc = saldo <= 0 ? '' : [
       ...mensais.map(d=>`Mensalidade ${d.data}: R$${(+d.valor).toFixed(2)}`),
-      ...avulsos.map(d=>`Avulso ${d.descricao} (${d.data||''}): R$${(+d.valor).toFixed(2)}`),
-      ...multas.map(d=>`Multa ${d.data}: R$${d.valor} — ${d.descricao}`),
-      ...outros.map((d,i)=>`${d.descricao||'Outro'} (${d.data}): R$${d.valor.toFixed(2)}`)
-    ].join('<br>');
+      ...avulsos.map(d=>`${d.descricao||'Avulso'} (${d.data||''}): R$${(+d.valor).toFixed(2)}`),
+      ...multas.map(d=>`Multa: ${d.descricao} (${d.data}): R$${(+d.valor).toFixed(2)}`),
+      ...outros.map(d=>`${d.descricao||'Outro'} (${d.data}): R$${(+d.valor).toFixed(2)}`)
+    ].filter(Boolean).join('<br>');
 
     return `
     <div class="card" style="margin-bottom:8px;${saldo>0?'border-color:rgba(255,68,68,.25)':''}">
@@ -3632,10 +3640,11 @@ function abrirDarBaixa(jogadorId) {
   // Build list of unpaid debts
   const totalPago = (fin.pagamentos||[]).reduce((s,p)=>s+(p.valor||0),0);
   let acumulado = 0;
-  const debitosAbertos = debitos.map((d,i) => {
-    const desc = d.descricao || d.tipo;
-    return { i, desc, valor: d.valor, data: d.data, tipo: d.tipo };
-  });
+  const debitosAbertos = debitos.reduce((acc, d, i) => {
+    if (!d.quitado) acc.push({ i, desc: d.descricao || d.tipo, valor: d.valor, data: d.data, tipo: d.tipo });
+    return acc;
+  }, []);
+  if (debitosAbertos.length === 0) { showToast('Nenhum débito em aberto'); return; }
 
   const overlay = document.createElement('div');
   overlay.className = 'overlay open';
@@ -3689,8 +3698,19 @@ async function executarBaixa(jogadorId) {
   const dataFmt = dataInput
     ? new Date(dataInput + 'T12:00:00').toLocaleDateString('pt-BR')
     : new Date().toLocaleDateString('pt-BR');
-  const desc = `Baixa: ${debito.descricao || debito.tipo}`;
-  await darBaixaComData(jogadorId, val, desc, dataFmt);
+  // Marca o débito como quitado (não exclui — mantém histórico)
+  debito.quitado = true;
+  // Registra pagamento no histórico financeiro
+  if (!fin.pagamentos) fin.pagamentos = [];
+  fin.pagamentos.push({
+    id: 'p' + Date.now(),
+    valor: val,
+    descricao: `Baixa: ${debito.descricao || debito.tipo}`,
+    data: dataFmt
+  });
+  appData.financas[jogadorId] = fin;
+  await firestoreSet('financas', jogadorId, fin);
+  saveLocal();
   document.getElementById('modalDarBaixa')?.remove();
   renderFinancas();
   showToast('Pagamento registrado ✅');
