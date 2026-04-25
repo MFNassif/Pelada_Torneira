@@ -331,19 +331,17 @@ function getFinancasJogador(jogadorId) {
 }
 
 function semanasAtraso5du() {
-  // Weeks overdue based on this month's 5du
+  // Weeks overdue relative to the NEXT relevant deadline (get5DiasUteis)
+  // Example: if all paid for april and next deadline is 08/05,
+  // multa only starts counting after 08/05
   const hoje = new Date();
-  hoje.setHours(0,0,0,0);
-  const mesHoje = hoje.getMonth();
-  const anoHoje = hoje.getFullYear();
-  const dia5du = calc5DiasUteis(mesHoje, anoHoje);
-  const prazo = new Date(anoHoje, mesHoje, dia5du);
-  prazo.setHours(23,59,59,999);
-  if (hoje <= prazo) return 0;
-  // Full weeks since end of deadline day
-  const inicioDia5du = new Date(anoHoje, mesHoje, dia5du);
-  inicioDia5du.setHours(0,0,0,0);
-  const diffDias = Math.floor((hoje - inicioDia5du) / (24*60*60*1000));
+  hoje.setHours(0, 0, 0, 0);
+  const prazo = get5DiasUteis(); // already returns next relevant deadline
+  prazo.setHours(23, 59, 59, 999);
+  if (hoje <= prazo) return 0; // within deadline — no multa
+  const inicioPrazo = new Date(prazo);
+  inicioPrazo.setHours(0, 0, 0, 0);
+  const diffDias = Math.floor((hoje - inicioPrazo) / (24 * 60 * 60 * 1000));
   return Math.floor(diffDias / 7);
 }
 
@@ -351,7 +349,7 @@ function totalDebitoJogador(jogadorId) {
   const fin = getFinancasJogador(jogadorId);
   const total = (fin.debitos||[]).reduce((s,d) => s + (d.valor||0), 0);
   const pago = (fin.pagamentos||[]).reduce((s,p) => s + (p.valor||0), 0);
-  let saldo = total - pago;
+  let saldo = Math.max(0, total - pago); // never show negative balance
   // Add automatic weekly late fee for mensalistas with unpaid mensal debts
   if (jogadorMensalista(jogadorId)) {
     const semanas = semanasAtraso5du();
@@ -834,7 +832,16 @@ function renderPresenca() {
 }
 
 async function checkMensalidadeAtual() {
-  // Auto-gera débito de mensalidade para o mês atual se ainda não existe
+  // Auto-gera débito de mensalidade APENAS se estiver a 7 dias ou menos do prazo
+  // (evita gerar débito logo no início do mês quando todos estão quite)
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+  const prazo = get5DiasUteis();
+  prazo.setHours(23, 59, 59, 999);
+  const diasParaPrazo = Math.ceil((prazo - hoje) / (24 * 60 * 60 * 1000));
+  // Only generate if within 7 days of deadline or already past it
+  if (diasParaPrazo > 7) return;
+
   const mesRef = getMesReferencia();
   const data5du = getUltimo5du();
   const mensalistas = appData.jogadores.filter(j => j.tipoJogador === 'mensalista');
@@ -2727,7 +2734,19 @@ function abrirEditarDebitos(jogadorId) {
 async function removerDebitoIdx(jogadorId, idx) {
   const fin = getFinancasJogador(jogadorId);
   if (!fin.debitos || !fin.debitos[idx]) return;
+  const debito = fin.debitos[idx];
+  // Find associated payment (baixa) by matching description
+  const descBaixa = `Baixa: ${debito.descricao || debito.tipo}`;
+  const pagIdx = (fin.pagamentos||[]).findIndex(p => p.descricao === descBaixa);
+  const temPagamento = pagIdx >= 0;
+  let removerPag = false;
+  if (temPagamento) {
+    removerPag = confirm(`Este débito tem uma baixa associada de R$${fin.pagamentos[pagIdx].valor}. Remover também o pagamento?`);
+  }
   fin.debitos.splice(idx, 1);
+  if (removerPag && pagIdx >= 0) {
+    fin.pagamentos.splice(pagIdx, 1);
+  }
   appData.financas[jogadorId] = fin;
   await firestoreSet('financas', jogadorId, fin);
   saveLocal();
