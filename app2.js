@@ -331,18 +331,18 @@ function getFinancasJogador(jogadorId) {
 }
 
 function semanasAtraso5du() {
-  // Weeks overdue relative to the NEXT relevant deadline (get5DiasUteis)
-  // Example: if all paid for april and next deadline is 08/05,
-  // multa only starts counting after 08/05
+  // Conta semanas de atraso após o PRÓXIMO prazo de pagamento (get5DiasUteis)
+  // Antes do prazo: 0 semanas (sem multa, pode confirmar presença)
+  // Após o prazo: 1 semana = R$5, 2 semanas = R$10, etc.
   const hoje = new Date();
   hoje.setHours(0, 0, 0, 0);
-  const prazo = get5DiasUteis(); // already returns next relevant deadline
+  const prazo = get5DiasUteis(); // próximo vencimento (ex: 08/05/2026)
   prazo.setHours(23, 59, 59, 999);
-  if (hoje <= prazo) return 0; // within deadline — no multa
+  if (hoje <= prazo) return 0; // ainda dentro do prazo
   const inicioPrazo = new Date(prazo);
   inicioPrazo.setHours(0, 0, 0, 0);
   const diffDias = Math.floor((hoje - inicioPrazo) / (24 * 60 * 60 * 1000));
-  return Math.floor(diffDias / 7);
+  return Math.floor(diffDias / 7); // 1 semana completa = R$5
 }
 
 function totalDebitoJogador(jogadorId) {
@@ -832,23 +832,12 @@ function renderPresenca() {
 }
 
 async function checkMensalidadeAtual() {
-  // Auto-gera débito de mensalidade APENAS se estiver a 7 dias ou menos do prazo
-  // (evita gerar débito logo no início do mês quando todos estão quite)
-  const hoje = new Date();
-  hoje.setHours(0, 0, 0, 0);
-  const prazo = get5DiasUteis();
-  prazo.setHours(23, 59, 59, 999);
-  const diasParaPrazo = Math.ceil((prazo - hoje) / (24 * 60 * 60 * 1000));
-  // Only generate if within 7 days of deadline or already past it
-  if (diasParaPrazo > 7) return;
+  // Mensalidades são geradas MANUALMENTE pelo admin
+  // Não gera débitos automaticamente para evitar cobranças antes do prazo
+  return;
+}
 
-  const mesRef = getMesReferencia();
-  const data5du = getUltimo5du();
-  const mensalistas = appData.jogadores.filter(j => j.tipoJogador === 'mensalista');
-  let gerou = false;
-  for (const j of mensalistas) {
-    const fin = getFinancasJogador(j.id);
-    const jaTemEsseMes = (fin.debitos||[]).some(d => d.tipo==='mensal' && d.descricao?.includes(mesRef));
+ d.tipo==='mensal' && d.descricao?.includes(mesRef));
     if (!jaTemEsseMes) {
       await adicionarDebitoComData(j.id, 'mensal', 80, `Mensalidade ${mesRef}`, data5du);
       gerou = true;
@@ -1040,7 +1029,10 @@ function renderPeladasHistorico() {
   if (!container) return;
   const peladas = appData.peladasHist || [];
   if (!peladas.length) { container.innerHTML = ''; return; }
-  const sorted = [...peladas].sort((a,b) => (b.savedAt||0) - (a.savedAt||0));
+  // Deduplicate by id (prevent duplicates from realtime subscription)
+  const seen = new Set();
+  const unique = peladas.filter(p => { if(!p.id||seen.has(p.id)) return false; seen.add(p.id); return true; });
+  const sorted = [...unique].sort((a,b) => (b.savedAt||0) - (a.savedAt||0));
   container.innerHTML = `
     <div class="section-lbl" style="margin-top:16px">PELADAS ANTERIORES</div>
     ${sorted.map(p => {
@@ -1100,6 +1092,7 @@ function openPeladaDetalhe(peladaId) {
     tempoHTML = `<div style="background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.25);border-radius:10px;padding:12px 14px;margin-bottom:14px">
       <div style="font-size:9px;letter-spacing:2px;text-transform:uppercase;color:#eab308;font-weight:600;margin-bottom:6px">⏳ VOTAÇÃO MVP ABERTA</div>
       <div style="font-size:12px;color:var(--t2)">Encerra em <strong style="color:var(--text)">${horas}h ${min}min</strong> · ${totalVotos}/${totalEleg} votos</div>
+      ${currentUser?.isAdmin ? `<button onclick="encerrarVotacaoForce('${p.id}')" style="margin-top:8px;background:rgba(234,179,8,.15);border:1px solid rgba(234,179,8,.3);border-radius:8px;color:#eab308;font-family:'Oswald',sans-serif;font-size:12px;letter-spacing:1px;padding:6px 14px;cursor:pointer;width:100%">⚡ ENCERRAR VOTAÇÃO AGORA</button>` : ''}
     </div>`;
   }
 
@@ -1221,7 +1214,7 @@ function openPeladaDetalhe(peladaId) {
       const isMvp = p.mvp?.id === j.id;
       const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':`#${i+1}`;
       const minhasReacoes = reacoes[j.id] || {};
-      const emojisBtns = ['🔥','👑','💀','🎯','⚽','😂','👏','💪'].map(em => {
+      const emojisBtns = ['🔥','👑','💀','🎯','⚽','😂','👏','💪','🌈','💩'].map(em => {
         const count = Object.values(minhasReacoes).filter(r=>r===em).length;
         const minha = currentUser && minhasReacoes[currentUser.id] === em;
         return `<button onclick="reagir('${p.id}','${j.id}','${em}')" style="background:${minha?'rgba(201,168,76,.2)':'rgba(255,255,255,.05)'};border:1px solid ${minha?'var(--border-gold)':'rgba(255,255,255,.08)'};border-radius:99px;padding:3px 8px;cursor:pointer;font-size:12px;display:inline-flex;align-items:center;gap:3px;color:var(--text)">${em}${count>0?`<span style="font-size:10px;color:var(--t2)">${count}</span>`:''}</button>`;
@@ -1247,11 +1240,46 @@ function openPeladaDetalhe(peladaId) {
     }).join('');
 
   document.getElementById('peladaDetalheTitle').textContent = `PELADA ${p.data}`;
+  // Add delete button for admins
+  const delBtn = document.getElementById('btnExcluirPelada');
+  if (delBtn) delBtn.style.display = currentUser?.isAdmin ? 'block' : 'none';
+  if (delBtn) delBtn.onclick = () => excluirPelada(p.id);
   document.getElementById('peladaDetalheMvp').innerHTML = tempoHTML + podioHTML + votacaoHTML;
   document.getElementById('peladaDetalheList').innerHTML = `<div class="section-lbl" style="margin-top:4px">ESTATÍSTICAS COMPLETAS</div>` + rowsComReacoes;
   openModal('modalPeladaDetalhe');
 }
 window.openPeladaDetalhe = openPeladaDetalhe;
+
+async function excluirPelada(peladaId) {
+  if (!currentUser?.isAdmin) return;
+  const p = (appData.peladasHist||[]).find(x=>x.id===peladaId);
+  if (!p) return;
+  if (!confirm(`Excluir pelada de ${p.data}? As estatísticas dos jogadores serão removidas.`)) return;
+  if (!confirm('Tem certeza? Esta ação não pode ser desfeita.')) return;
+
+  // Remove stats from each player
+  for (const jp of (p.jogadores||[])) {
+    const j = appData.jogadores.find(x=>x.id===jp.id);
+    if (!j) continue;
+    // Remove the domingo entry matching this pelada's date
+    const before = j.domingos?.length || 0;
+    j.domingos = (j.domingos||[]).filter(d => d.data !== p.data);
+    // Also remove mvp flag if this was the MVP pelada
+    if (p.mvp?.id === j.id && j.mvps > 0) j.mvps--;
+    if (j.domingos.length !== before) {
+      await firestoreSet('jogadores', j.id, j);
+    }
+  }
+
+  // Delete pelada from Firebase
+  await firestoreDelete('peladasHist', peladaId);
+  appData.peladasHist = (appData.peladasHist||[]).filter(x=>x.id!==peladaId);
+  saveLocal();
+  closeModal('modalPeladaDetalhe');
+  renderPeladasHistorico();
+  showToast('Pelada excluída e estatísticas removidas');
+}
+window.excluirPelada = excluirPelada;
 
 async function reagir(peladaId, jogadorId, emoji) {
   if (!currentUser || currentUser.isGuest) { showToast('Faça login para reagir'); return; }
@@ -1935,7 +1963,7 @@ async function confirmarDataSorteio() {
   closeModal('modalDataSorteio');
   flow={
     step:'sel', presentes:[], times:[], data,
-    ausentes:[], statsIdx:0, statsOrder:[], statsData:{}
+    ausentes:[], statsIdx:0, statsOrder:[], statsData:{}, _saving:false
   };
   appData.restricoes=appData.restricoes.filter(r=>r.duracao!=='domingo');
   // Clear any previous presença when starting new sorteio
@@ -2248,7 +2276,7 @@ async function concluirPartidaHome() {
 // ─── STATS STEP ───────────────────────────────────────────────
 function renderStatsStep(c) {
   const order=flow.statsOrder,idx=flow.statsIdx,total=order.length;
-  if(idx>=total){salvarStats();return;}
+  if(idx>=total){if(!flow._saving){flow._saving=true;salvarStats();}return;}
   const id=order[idx];
   const j=appData.jogadores.find(x=>x.id===id);
   const ti=flow.times.findIndex(t=>t.includes(id));
@@ -2923,6 +2951,17 @@ window.setRankStat=setRankStat;
 window.setRankDir=setRankDir;
 window.confirmarDataSorteio=confirmarDataSorteio;
 window.votarMvp=votarMvp;
+
+async function encerrarVotacaoForce(peladaId) {
+  if (!currentUser?.isAdmin) return;
+  if (!confirm('Encerrar a votação MVP agora?')) return;
+  const p = (appData.peladasHist||[]).find(x=>x.id===peladaId);
+  if (!p || p.votacao?.status !== 'aberta') return;
+  await finalizarVotacao(peladaId, p, false);
+  closeModal('modalPeladaDetalhe');
+  showToast('Votação encerrada! ✅');
+}
+window.encerrarVotacaoForce = encerrarVotacaoForce;
 window.checkVotacoesExpiradas=checkVotacoesExpiradas;
 window.confirmarPresenca=confirmarPresenca;
 window.desmarcarPresenca=desmarcarPresenca;
