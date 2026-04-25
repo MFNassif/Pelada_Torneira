@@ -21,6 +21,21 @@ let currentUser = null;
 let appData = { jogadores: [], restricoes: [], config: { aleatoriedade: 15 }, admins: [], nextId: 1, presenca: null, financas: {} };
 let unsubscribe = null;
 
+// ─── HELPER: convert Firestore times obj back to array of arrays ─
+function timesToArr(times, count) {
+  if (!times) return [];
+  if (Array.isArray(times)) return times; // already array (local)
+  // Convert {t0:[...], t1:[...]} back to [[...],[...]]
+  const n = count || Object.keys(times).length;
+  const arr = [];
+  for (let i = 0; i < n; i++) {
+    const t = times['t' + i];
+    if (t) arr.push(t);
+  }
+  return arr;
+}
+
+
 // ─── FIREBASE ────────────────────────────────────────────────
 function salvarFirebaseConfig() {
   const cfg = {
@@ -600,7 +615,8 @@ function renderHome() {
   const stats = document.getElementById('homeStats');
   const adminControls = document.getElementById('homeAdminControls');
 
-  if (!sorteio || !sorteio.times || sorteio.times.length === 0) {
+  const sorteioTimesArr = timesToArr(sorteio?.times, sorteio?.timesCount);
+  if (!sorteio || !sorteio.times || sorteioTimesArr.length === 0) {
     msg.innerHTML = `<div style="font-family:'Oswald',sans-serif;font-size:16px;color:var(--t2);letter-spacing:1px">TIMES AINDA NÃO SORTEADOS</div>`;
     stats.innerHTML = '';
     if (adminControls) adminControls.innerHTML = '';
@@ -610,7 +626,7 @@ function renderHome() {
       ? `<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);border-radius:99px;padding:4px 12px;font-size:11px;color:#22c55e;margin-bottom:12px">● PARTIDA EM ANDAMENTO</div>`
       : '';
 
-    const timesHTML = sorteio.times.map((t, ti) => `
+    const timesHTML = sorteioTimesArr.map((t, ti) => `
       <div class="team-card ${T_COLORS[ti]}" style="margin-bottom:8px">
         <div class="t-name"><div class="t-dot"></div>Time ${ti+1}</div>
         ${t.map(id => {
@@ -1276,7 +1292,11 @@ function openPeladaDetalhe(peladaId) {
 window.openPeladaDetalhe = openPeladaDetalhe;
 // ─── DETALHE POR DATA (sem peladaHist) ───────────────────────
 function openPeladaDetalheByData(data) {
-  // Collect all players who have a domingo entry for this date
+  // If there's a peladasHist record for this date, use the full detail view
+  const pHist = (appData.peladasHist||[]).find(x => x.data === data);
+  if (pHist) { openPeladaDetalhe(pHist.id); return; }
+
+  // Otherwise build from jogadores' domingos (manually inserted data)
   const jogadoresNaData = appData.jogadores
     .map(j => {
       const dom = (j.domingos||[]).find(d => d.data === data);
@@ -1312,10 +1332,7 @@ function openPeladaDetalheByData(data) {
     delBtn.style.display = currentUser?.isAdmin ? 'block' : 'none';
     delBtn.onclick = () => excluirPeladaPorData(data);
   }
-  document.getElementById('peladaDetalheMvp').innerHTML = `
-    <div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:12px;color:var(--t2)">
-      📋 Pelada registrada manualmente — sem sorteio pelo app
-    </div>`;
+  document.getElementById('peladaDetalheMvp').innerHTML = '';
   document.getElementById('peladaDetalheList').innerHTML =
     `<div class="section-lbl" style="margin-top:4px">ESTATÍSTICAS COMPLETAS</div>` + rowsHTML;
   openModal('modalPeladaDetalhe');
@@ -2301,15 +2318,23 @@ function cancelarSorteio() {
 }
 
 async function confirmarTimes(){
+  // Firestore doesn't support nested arrays — convert to objects
+  const timesObj = {};
+  const nomesObj = {};
+  flow.times.forEach((t, i) => {
+    timesObj['t' + i] = t;
+    nomesObj['t' + i] = t.map(id => {
+      const j = appData.jogadores.find(x=>x.id===id);
+      return j?.nome || id;
+    });
+  });
   const timesData = {
-    times: flow.times,
+    times: timesObj,
+    timesCount: flow.times.length,
     data: flow.data,
     status: 'confirmado',
     sorteadoEm: Date.now(),
-    nomes: flow.times.map(t => t.map(id => {
-      const j = appData.jogadores.find(x=>x.id===id);
-      return j?.nome || id;
-    }))
+    nomes: nomesObj
   };
   // Save locally first as fallback
   appData.ultimoSorteio = timesData;
@@ -2336,7 +2361,7 @@ function abrirEdicaoTimes() {
   const sorteio = appData.ultimoSorteio;
   if (!sorteio) return;
   // Deep copy times
-  editTimesState = sorteio.times.map(t => [...t]);
+  editTimesState = timesToArr(sorteio.times, sorteio.timesCount).map(t => [...t]);
   renderEdicaoTimes();
   openModal('modalEditTimes');
 }
@@ -2351,7 +2376,7 @@ function renderEdicaoTimes() {
       <div class="t-name" style="font-size:13px;margin-bottom:8px"><div style="width:8px;height:8px;border-radius:50%;background:${dotColors[ti]};flex-shrink:0;display:inline-block;margin-right:6px"></div>Time ${ti+1}</div>
       ${tm.map((id, pi) => {
         const j = appData.jogadores.find(x=>x.id===id);
-        const opts = appData.ultimoSorteio.times.flat().map(pid => {
+        const opts = timesToArr(appData.ultimoSorteio.times, appData.ultimoSorteio.timesCount).flat().map(pid => {
           const pj = appData.jogadores.find(x=>x.id===pid);
           return `<option value="${pid}" ${pid===id?'selected':''}>${pj?.nome||pid}</option>`;
         }).join('');
@@ -2380,11 +2405,19 @@ function moverJogador(timeIdx, posIdx, novoId) {
 async function salvarEdicaoTimes() {
   if (!currentUser?.isAdmin) return;
   const sorteio = appData.ultimoSorteio;
-  sorteio.times = editTimesState;
-  sorteio.nomes = editTimesState.map(t => t.map(id => {
-    const j = appData.jogadores.find(x=>x.id===id);
-    return j?.nome || id;
-  }));
+  // Convert back to Firestore-compatible object
+  const timesObjEdit = {};
+  const nomesObjEdit = {};
+  editTimesState.forEach((t, i) => {
+    timesObjEdit['t' + i] = t;
+    nomesObjEdit['t' + i] = t.map(id => {
+      const j = appData.jogadores.find(x=>x.id===id);
+      return j?.nome || id;
+    });
+  });
+  sorteio.times = timesObjEdit;
+  sorteio.timesCount = editTimesState.length;
+  sorteio.nomes = nomesObjEdit;
   await firestoreSet('config', 'ultimoSorteio', sorteio);
   appData.ultimoSorteio = sorteio;
   saveLocal();
@@ -2411,10 +2444,11 @@ async function concluirPartidaHome() {
   const sorteio = appData.ultimoSorteio;
   if (!sorteio) return;
   // Load flow data from current sorteio to proceed to ausentes/stats
+  const sorteioArr = timesToArr(sorteio.times, sorteio.timesCount);
   flow = {
     step: 'ausentes',
-    presentes: sorteio.times.flat(),
-    times: sorteio.times,
+    presentes: sorteioArr.flat(),
+    times: sorteioArr,
     data: sorteio.data,
     ausentes: [],
     statsIdx: 0,
@@ -2514,11 +2548,15 @@ async function salvarStats() {
   const elapsesAt = Date.now() + 24 * 60 * 60 * 1000; // 24h from now
   const elegiveisVotar = presentes.map(p => p.id); // only players who played can vote
 
+  // Convert nested arrays to Firestore-compatible objects
+  const timesObjRec = {};
+  flow.times.forEach((t, i) => { timesObjRec['t' + i] = t; });
+
   const peladaRec = {
     id: peladaId,
     data,
     savedAt: Date.now(),
-    times: flow.times,
+    times: timesObjRec,
     jogadores: peladaJogadores,
     mvp: null,
     podio: null,
