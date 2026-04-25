@@ -410,33 +410,52 @@ function totalDebitoJogador(jogadorId) {
   return +(saldo).toFixed(2);
 }
 
-function jogadorInadimplente(jogadorId) {
+function saldoDebitosPorTipo(jogadorId) {
+  // Returns { multas, mensais, avulsos, outros, totalPago }
+  // so callers can decide what counts as "blocking"
   const fin = getFinancasJogador(jogadorId);
   const debitos = fin.debitos || [];
   const pagamentos = fin.pagamentos || [];
   const totalPago = pagamentos.reduce((s,p) => s + (p.valor||0), 0);
 
-  // Multas sempre bloqueiam (independente de tipo ou prazo)
-  const totalMultas = debitos
-    .filter(d => d.tipo === 'multa')
-    .reduce((s,d) => s + (d.valor||0), 0);
-  // Pró-rata: desconta pagamentos dos não-multas primeiro, depois das multas
-  const totalNaoMultas = debitos
-    .filter(d => d.tipo !== 'multa')
-    .reduce((s,d) => s + (d.valor||0), 0);
-  const pagoParaMultas = Math.max(0, totalPago - totalNaoMultas);
-  if (totalMultas > pagoParaMultas) return true;
+  const somaTipo = tipo => debitos.filter(d=>d.tipo===tipo).reduce((s,d)=>s+(d.valor||0), 0);
+  return {
+    multas:  somaTipo('multa'),
+    mensais: somaTipo('mensal'),
+    avulsos: somaTipo('avulso'),
+    outros:  somaTipo('outro'),
+    totalPago,
+    totalDebitos: debitos.reduce((s,d)=>s+(d.valor||0), 0),
+  };
+}
 
-  // Avulsos: qualquer débito não pago bloqueia
+function jogadorInadimplente(jogadorId) {
+  const s = saldoDebitosPorTipo(jogadorId);
+
+  // ── REGRA 1: Multas sempre bloqueiam ──────────────────────
+  // Calcula saldo de multas: quanto foi pago vai primeiro para outros débitos,
+  // o que sobrar abate as multas
+  const debitosNaoMulta = s.mensais + s.avulsos + s.outros;
+  const pagoParaMultas = Math.max(0, s.totalPago - debitosNaoMulta);
+  if (s.multas > pagoParaMultas) return true;
+
+  // ── REGRA 2: Avulsos — qualquer débito de avulso não pago bloqueia ──
   if (!jogadorMensalista(jogadorId)) {
-    return totalDebitoJogador(jogadorId) > 0;
+    // Para avulso: saldo total excluindo mensalidade (que não se aplica)
+    const saldoAvulso = Math.max(0, (s.avulsos + s.outros + s.multas) - s.totalPago);
+    return saldoAvulso > 0;
   }
 
-  // Mensalista: mensalidade só bloqueia APÓS o 5du
+  // ── REGRA 3: Mensalista — mensalidade só bloqueia APÓS o 5du ──────
   const passou5du = semanasAtraso5du() > 0;
-  if (!passou5du) return false; // dentro do prazo — pode confirmar mesmo com mensalidade pendente
+  if (!passou5du) {
+    // Ainda dentro do prazo — só multas e avulsos bloqueiam (já verificados acima)
+    // Débitos de avulso para mensalistas também bloqueiam
+    const saldoSemMensal = Math.max(0, (s.avulsos + s.outros + s.multas) - s.totalPago);
+    return saldoSemMensal > 0;
+  }
 
-  // Após 5du: bloqueia se tiver qualquer saldo devedor
+  // Após 5du: qualquer saldo devedor bloqueia
   return totalDebitoJogador(jogadorId) > 0;
 }
 
@@ -635,25 +654,49 @@ function showApp() {
 }
 
 // ─── HOME ────────────────────────────────────────────────────
+function getProximoDomingo() {
+  const hoje = new Date();
+  const dow = hoje.getDay(); // 0=dom
+  const diasAte = dow === 0 ? 7 : 7 - dow; // next sunday (never today)
+  const prox = new Date(hoje);
+  prox.setDate(hoje.getDate() + diasAte);
+  return prox.toLocaleDateString('pt-BR');
+}
+
 function renderHome() {
   const isAdmin = currentUser?.isAdmin;
   document.getElementById('homeSub').textContent = currentUser ? `Bem-vindo, ${currentUser.nome}!` : '';
-  document.getElementById('btnSortear').style.display = isAdmin ? 'flex' : 'none';
-  const btnComH = document.getElementById('btnComunicado');
-  if (btnComH) btnComH.style.display = isAdmin ? 'block' : 'none';
-  renderComunicados();
 
   const sorteio = appData.ultimoSorteio;
+  const sorteioAtivo = sorteio && sorteio.times && timesToArr(sorteio.times, sorteio.timesCount).length > 0;
+
+  // Admin buttons: show after presença, hide when times are shown
+  const adminBtns = document.getElementById('homeAdminButtons');
+  if (adminBtns) adminBtns.style.display = isAdmin && !sorteioAtivo ? 'block' : 'none';
+
+  const btnSortear = document.getElementById('btnSortear');
+  if (btnSortear) {
+    btnSortear.style.display = isAdmin ? 'flex' : 'none';
+    const confirmados = appData.presenca?.confirmados || [];
+    btnSortear.textContent = confirmados.length >= 15
+      ? `⚽ SORTEAR TIMES (${confirmados.length} confirmados)`
+      : '⚽ SORTEAR TIMES';
+  }
+  const btnCom = document.getElementById('btnComunicado');
+  if (btnCom) btnCom.style.display = isAdmin ? 'block' : 'none';
+
   const msg = document.getElementById('homeMsg');
   const stats = document.getElementById('homeStats');
   const adminControls = document.getElementById('homeAdminControls');
 
-  const sorteioTimesArr = timesToArr(sorteio?.times, sorteio?.timesCount);
-  if (!sorteio || !sorteio.times || sorteioTimesArr.length === 0) {
-    msg.innerHTML = `<div style="font-family:'Oswald',sans-serif;font-size:16px;color:var(--t2);letter-spacing:1px">TIMES AINDA NÃO SORTEADOS</div>`;
-    stats.innerHTML = '';
+  if (!sorteioAtivo) {
+    // No active sorteio — show nothing in msg area (presença handles the list)
+    if (msg) msg.innerHTML = '';
+    if (stats) stats.innerHTML = '';
     if (adminControls) adminControls.innerHTML = '';
   } else {
+    // Times sorteados — hide presença, show times
+    const sorteioTimesArr = timesToArr(sorteio.times, sorteio.timesCount);
     const T_COLORS = ['t0','t1','t2','t3'];
     const statusLabel = sorteio.status === 'confirmado'
       ? `<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);border-radius:99px;padding:4px 12px;font-size:11px;color:#22c55e;margin-bottom:12px">● PARTIDA EM ANDAMENTO</div>`
@@ -668,12 +711,13 @@ function renderHome() {
         }).join('')}
       </div>`).join('');
 
-    msg.innerHTML = statusLabel + timesHTML;
-    stats.innerHTML = `<div style="font-size:10px;color:var(--t3);margin-top:4px">Sorteado em ${sorteio.data}</div>`;
+    if (msg) msg.innerHTML = `<div class="card shield-card" style="margin-bottom:8px">${statusLabel}${timesHTML}</div>`;
+    if (stats) stats.innerHTML = `<div style="font-size:10px;color:var(--t3);margin-bottom:8px;padding:0 4px">Sorteado em ${sorteio.data}</div>`;
 
+    // Admin controls (cancelar/concluir) after times
     if (adminControls && isAdmin && sorteio.status === 'confirmado') {
       adminControls.innerHTML = `
-        <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+        <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
           <button class="btn btn-ghost" style="flex:1;min-width:120px" onclick="abrirEdicaoTimes()">✏️ EDITAR TIMES</button>
           <button class="btn btn-danger" style="flex:1;min-width:120px" onclick="cancelarPartidaHome()">❌ CANCELAR</button>
           <button class="btn btn-gold" style="flex:1" onclick="concluirPartidaHome()">🏁 CONCLUIR</button>
@@ -754,10 +798,15 @@ async function removerComunicado(id) {
 }
 
 // ─── PRESENÇA ─────────────────────────────────────────────────
-const DESCRICAO_PELADA = `Pelada do Torneira
+function getDescricaoPelada(horario) {
+  const domingo = getProximoDomingo();
+  return `Pelada do Torneira ${domingo}
 R. Juscelino Barbosa 254
-11:30 às 13:00
+${horario || '11:30 às 13:00'}
 Pix: mfnassif16@gmail.com`;
+}
+// Keep for backwards compat
+const DESCRICAO_PELADA = getDescricaoPelada('11:30 às 13:00');
 
 const REGRAS_PELADA = `• 1ª partida: 10 min, sem limite de gol (2 primeiros times completos)
 • Demais partidas: 7 min ou 2 gols
@@ -774,7 +823,10 @@ function renderPresenca() {
   const peladas = appData.peladasHist || [];
   const ultimaPelada = peladas.length > 0 ? [...peladas].sort((a,b)=>(b.savedAt||0)-(a.savedAt||0))[0] : null;
   const votacaoAberta = ultimaPelada?.votacao?.status === 'aberta';
-  if (!sorteio || sorteio.status !== 'confirmado') { cont.innerHTML = ''; return; }
+  // Hide presença when times already sorted (sorteio active)
+  if (sorteio && sorteio.times && timesToArr(sorteio.times, sorteio.timesCount).length > 0) {
+    cont.innerHTML = ''; return;
+  }
   if (votacaoAberta) {
     cont.innerHTML = `
       <div class="section-lbl" style="margin-top:16px">LISTA DE PRESENÇA</div>
@@ -827,10 +879,17 @@ function renderPresenca() {
     return { id, nome: j?.nome || id };
   });
 
-  const descricaoAtual = DESCRICAO_PELADA.replace('11:30 às 13:00', horario);
+  const localAtual = presenca.local || 'R. Juscelino Barbosa 254';
+  const horarioAtual = presenca.horario || horario;
+  const descricaoAtual = `Pelada do Torneira\n${localAtual}\n${horarioAtual}\nPix: mfnassif16@gmail.com`;
+
+  const isAdminUser = currentUser?.isAdmin;
 
   cont.innerHTML = `
-    <div class="section-lbl" style="margin-top:16px">LISTA DE PRESENÇA</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:16px;margin-bottom:6px">
+      <div class="section-lbl" style="margin:0">LISTA DE PRESENÇA</div>
+      ${isAdminUser ? `<button onclick="abrirAdminPresenca()" style="background:var(--gold-dim);border:1px solid var(--border-gold);border-radius:8px;color:var(--gold);font-size:11px;padding:4px 12px;cursor:pointer;font-family:'DM Sans',sans-serif">⚙️ Gerenciar</button>` : ''}
+    </div>
     <div class="card shield-card" style="margin-bottom:12px">
       <div style="white-space:pre-line;font-size:13px;color:var(--text);line-height:1.7;margin-bottom:14px;font-weight:500">${descricaoAtual}</div>
 
@@ -927,6 +986,137 @@ async function checkAvulsosInadimplentes() {
   }
 }
 
+function abrirAdminPresenca() {
+  if (!currentUser?.isAdmin) return;
+  const presenca = appData.presenca || { confirmados:[], espera:[], data: appData.ultimoSorteio?.data };
+  const sorteio = appData.ultimoSorteio;
+
+  // Build list of all players not yet confirmed
+  const naoNaLista = appData.jogadores.filter(j =>
+    !presenca.confirmados.includes(j.id) && !(presenca.espera||[]).includes(j.id)
+  );
+
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay open';
+  overlay.id = 'modalAdminPresenca';
+  overlay.innerHTML = `
+    <div class="modal" style="max-height:90vh;overflow-y:auto">
+      <div class="mhandle"></div>
+      <div class="m-title">GERENCIAR LISTA</div>
+      <div class="m-sub">Admin · ${presenca.confirmados.length} confirmados</div>
+
+      <div class="section-lbl" style="margin-bottom:8px">LOCAL E HORÁRIO</div>
+      <div class="field"><label>Endereço</label>
+        <input class="input" id="apLocal" value="R. Juscelino Barbosa 254" maxlength="60">
+      </div>
+      <div style="display:flex;gap:8px">
+        <div class="field" style="flex:1"><label>Início</label>
+          <input class="input" id="apHoraIni" value="11:30" maxlength="5">
+        </div>
+        <div class="field" style="flex:1"><label>Fim</label>
+          <input class="input" id="apHoraFim" value="${presenca.confirmados.length>=20?'13:30':'13:00'}" maxlength="5">
+        </div>
+      </div>
+      <button class="btn btn-ghost" style="margin-bottom:16px;font-size:12px" onclick="salvarInfoPelada()">💾 SALVAR LOCAL/HORÁRIO</button>
+
+      <div class="section-lbl" style="margin-bottom:8px">ADICIONAR JOGADOR</div>
+      <select class="input" id="apAddJog" style="margin-bottom:8px">
+        <option value="">— Selecione —</option>
+        ${naoNaLista.map(j=>`<option value="${j.id}">${j.nome}${j.tipoJogador==='mensalista'?' (M)':''}</option>`).join('')}
+      </select>
+      <div style="display:flex;gap:6px;margin-bottom:16px">
+        <button class="btn btn-gold" style="flex:1;font-size:12px" onclick="adminAdicionarPresenca('confirmados')">+ CONFIRMADO</button>
+        <button class="btn btn-ghost" style="flex:1;font-size:12px" onclick="adminAdicionarPresenca('espera')">+ ESPERA</button>
+      </div>
+
+      <div class="section-lbl" style="margin-bottom:8px">CONFIRMADOS (${presenca.confirmados.length})</div>
+      ${presenca.confirmados.map((id,i) => {
+        const j = appData.jogadores.find(x=>x.id===id);
+        const nome = j?.nome || id;
+        const cadastrado = !!j;
+        return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+          <span style="color:var(--t2);font-size:12px;min-width:20px">${i+1}.</span>
+          <span style="flex:1;font-size:13px;color:${cadastrado?'var(--text)':'#ef4444'}">${nome}${!cadastrado?' ⚠️ Não cadastrado':''}</span>
+          <button onclick="adminRemoverPresenca('confirmados','${id}')" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:16px;padding:0 4px">×</button>
+        </div>`;
+      }).join('')||'<div style="color:var(--t3);font-size:12px">Nenhum</div>'}
+
+      ${(presenca.espera||[]).length>0?`
+      <div class="section-lbl" style="margin-top:12px;margin-bottom:8px">ESPERA (${presenca.espera.length})</div>
+      ${presenca.espera.map((id,i) => {
+        const j = appData.jogadores.find(x=>x.id===id);
+        return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+          <span style="color:var(--t2);font-size:12px;min-width:20px">${i+1}.</span>
+          <span style="flex:1;font-size:13px">${j?.nome||id}</span>
+          <button onclick="adminRemoverPresenca('espera','${id}')" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:16px;padding:0 4px">×</button>
+        </div>`;
+      }).join('')}` : ''}
+
+      <button class="btn btn-ghost mt8" onclick="document.getElementById('modalAdminPresenca').remove()">FECHAR</button>
+    </div>`;
+  overlay.addEventListener('click', e => { if(e.target===overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+
+async function adminAdicionarPresenca(lista) {
+  const sel = document.getElementById('apAddJog')?.value;
+  if (!sel) { showToast('Selecione um jogador'); return; }
+  const presenca = appData.presenca || { confirmados:[], espera:[], data: appData.ultimoSorteio?.data };
+  if (!presenca[lista]) presenca[lista] = [];
+  if (presenca.confirmados.includes(sel) || (presenca.espera||[]).includes(sel)) {
+    showToast('Jogador já está na lista'); return;
+  }
+  presenca[lista].push(sel);
+  appData.presenca = presenca;
+  await firestoreSet('config', 'presenca', presenca);
+  saveLocal();
+  document.getElementById('modalAdminPresenca')?.remove();
+  abrirAdminPresenca();
+  renderPresenca();
+  showToast('Jogador adicionado ✅');
+}
+
+async function adminRemoverPresenca(lista, jogadorId) {
+  const presenca = appData.presenca;
+  if (!presenca) return;
+  presenca[lista] = (presenca[lista]||[]).filter(x => x !== jogadorId);
+  appData.presenca = presenca;
+  await firestoreSet('config', 'presenca', presenca);
+  saveLocal();
+  document.getElementById('modalAdminPresenca')?.remove();
+  abrirAdminPresenca();
+  renderPresenca();
+  showToast('Removido da lista');
+}
+
+// Save custom local/horario to presença
+async function salvarInfoPelada() {
+  const local = document.getElementById('apLocal')?.value?.trim();
+  const ini = document.getElementById('apHoraIni')?.value?.trim();
+  const fim = document.getElementById('apHoraFim')?.value?.trim();
+  const presenca = appData.presenca || { confirmados:[], espera:[], data: appData.ultimoSorteio?.data };
+  if (local) presenca.local = local;
+  if (ini && fim) presenca.horario = `${ini} às ${fim}`;
+  appData.presenca = presenca;
+  await firestoreSet('config', 'presenca', presenca);
+  saveLocal();
+  document.getElementById('modalAdminPresenca')?.remove();
+  renderPresenca();
+  showToast('Informações salvas ✅');
+}
+
+// Toast flutuante de aviso para admins
+function alertaAdminNaoCadastrado(nomeUsuario) {
+  const alerta = document.createElement('div');
+  alerta.style.cssText = `position:fixed;top:70px;left:50%;transform:translateX(-50%);background:#1a0000;border:2px solid #ef4444;border-radius:12px;padding:14px 20px;z-index:999;max-width:320px;width:90%;box-shadow:0 8px 32px rgba(255,68,68,.3)`;
+  alerta.innerHTML = `
+    <div style="font-family:'Oswald',sans-serif;font-size:13px;letter-spacing:1px;color:#ef4444;margin-bottom:4px">⚠️ ATENÇÃO</div>
+    <div style="font-size:13px;color:var(--text)"><strong style="color:#ef4444">${nomeUsuario}</strong> confirmou presença mas <strong>não está cadastrado</strong> como jogador</div>
+    <button onclick="this.parentElement.remove()" style="margin-top:10px;background:rgba(255,68,68,.15);border:1px solid rgba(255,68,68,.3);border-radius:8px;color:#ef4444;padding:5px 14px;cursor:pointer;font-size:12px;width:100%">ENTENDIDO</button>`;
+  document.body.appendChild(alerta);
+  setTimeout(() => alerta?.remove(), 15000); // auto-dismiss 15s
+}
+
 function parsePeladaDate(dateStr) {
   if (!dateStr) return null;
   // dd/mm/yyyy
@@ -937,10 +1127,21 @@ function parsePeladaDate(dateStr) {
 
 async function confirmarPresenca() {
   if (!currentUser || currentUser.isGuest) { showToast('Faça login para confirmar'); return; }
-  if (jogadorInadimplente(currentUser.id)) { showToast('Regularize suas pendências financeiras'); return; }
+
+  // Must be a registered player
+  const jogador = appData.jogadores.find(x => x.id === currentUser.id);
+  if (!jogador) {
+    showToast('Apenas jogadores cadastrados podem confirmar presença');
+    return;
+  }
+
+  if (jogadorInadimplente(currentUser.id)) {
+    showToast('⚠️ Você possui pendências financeiras. Regularize para confirmar.');
+    return;
+  }
 
   const sorteio = appData.ultimoSorteio;
-  if (!sorteio) return;
+  if (!sorteio) { showToast('Nenhum sorteio confirmado'); return; }
 
   const presenca = appData.presenca || { confirmados: [], espera: [], data: sorteio.data };
   const confirmados = presenca.confirmados || [];
@@ -952,20 +1153,25 @@ async function confirmarPresenca() {
 
   const now = Date.now();
   const peladaDate = parsePeladaDate(sorteio.data);
-  const h48 = 48 * 60 * 60 * 1000;
-  const dentro48h = peladaDate && (peladaDate - now) < h48;
+  // Priority window: mensalistas only until Friday 12h (47.5h before Sunday 11:30)
+  const fimPrioridade = peladaDate ? peladaDate - (47.5 * 60 * 60 * 1000) : null;
+  const dentroPrioridade = fimPrioridade && now < fimPrioridade;
+  const aposJanela = !dentroPrioridade;
+  const h24 = 24 * 60 * 60 * 1000;
+  const dentro24h = peladaDate && (peladaDate - now) < h24;
+
   const vagas = confirmados.length >= 20 ? 20 : 15;
   const listaCheia = confirmados.length >= vagas;
   const ehMensalista = jogadorMensalista(currentUser.id);
 
+  if (dentroPrioridade && !ehMensalista) {
+    showToast('⏳ Lista reservada para mensalistas até Sex 12h');
+    return;
+  }
+
   if (listaCheia) {
-    // During priority window: only mensalistas can confirm
-    if (dentroPrioridade && !ehMensalista) {
-      showToast('⏳ Lista reservada para mensalistas até Sex 12h');
-      return;
-    }
-    // Mensalista after priority window can displace last avulso confirmed
-    if (ehMensalista && aposJanelaMensalista) {
+    if (ehMensalista && aposJanela) {
+      // Mensalista pode deslocar último avulso
       const ultimoAvulso = [...confirmados].reverse().find(id => !jogadorMensalista(id));
       if (ultimoAvulso) {
         presenca.confirmados = confirmados.filter(id => id !== ultimoAvulso);
@@ -975,7 +1181,7 @@ async function confirmarPresenca() {
         showToast('Vaga garantida como mensalista ✅');
       } else {
         if (espera.length >= 5) { showToast('Lista de espera cheia'); return; }
-        presenca.espera.push(currentUser.id);
+        presenca.espera = [...espera, currentUser.id];
         showToast('Adicionado à lista de espera');
       }
     } else {
@@ -984,15 +1190,9 @@ async function confirmarPresenca() {
       showToast('Adicionado à lista de espera');
     }
   } else {
-    // During priority window: only mensalistas
-    if (dentroPrioridade && !ehMensalista) {
-      showToast('⏳ Lista reservada para mensalistas até Sex 12h');
-      return;
-    }
     presenca.confirmados = [...confirmados, currentUser.id];
-    // Avulso: register R$25 debt — must pay by saturday 12h
     if (!ehMensalista) {
-      const sab12h = peladaDate ? new Date(peladaDate - (24*60*60*1000)).setHours(12,0,0,0) : null;
+      const sab12h = peladaDate ? new Date(peladaDate - h24).setHours(12,0,0,0) : null;
       const sab12hStr = sab12h ? new Date(sab12h).toLocaleString('pt-BR') : 'Sáb 12h';
       await adicionarDebito(currentUser.id, 'avulso', 25, `Pelada ${sorteio.data} (pagar até ${sab12hStr})`);
     }
@@ -3336,6 +3536,14 @@ async function encerrarVotacaoForce(peladaId) {
 window.encerrarVotacaoForce = encerrarVotacaoForce;
 window.checkVotacoesExpiradas=checkVotacoesExpiradas;
 window.confirmarPresenca=confirmarPresenca;
+window.abrirAdminPresenca=abrirAdminPresenca;
+window.adminAdicionarPresenca=adminAdicionarPresenca;
+window.adminRemoverPresenca=adminRemoverPresenca;
+window.salvarInfoPelada=salvarInfoPelada;
+window.abrirAdminPresenca=abrirAdminPresenca;
+window.adminAdicionarPresenca=adminAdicionarPresenca;
+window.adminRemoverPresenca=adminRemoverPresenca;
+window.salvarInfoPelada=salvarInfoPelada;
 window.desmarcarPresenca=desmarcarPresenca;
 window.abrirDarBaixa=abrirDarBaixa;
 window.executarBaixa=executarBaixa;

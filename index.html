@@ -667,25 +667,33 @@ hr.div { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
         <div class="pg-sub" id="homeSub">Carregando...</div>
       </div>
 
-      <div class="card shield-card" style="margin-bottom:16px">
-        <div class="section-lbl">STATUS DA PELADA</div>
-        <div id="homeMsg" style="font-size:15px;font-weight:500">—</div>
-        <div id="homeStats" style="font-size:11px;color:var(--t2);margin-top:4px">—</div>
-      </div>
+      <!-- Comunicados aparecem primeiro -->
+      <div id="homeComunicados"></div>
 
-      <div id="btnComunicado" style="display:none;margin-bottom:8px">
-        <button class="btn btn-ghost" onclick="abrirNovoComunicado()" style="font-size:14px">
-          📢 NOVO COMUNICADO
+      <!-- Lista de presença (some quando times sorteados) -->
+      <div id="homePresenca"></div>
+
+      <!-- Times sorteados (aparece só quando há sorteio confirmado) -->
+      <div id="homeMsg"></div>
+      <div id="homeStats"></div>
+
+      <!-- Botões de admin: aparecem DEPOIS da lista -->
+      <div id="homeAdminButtons" style="display:none;margin-top:8px">
+        <div id="btnComunicado" style="display:none;margin-bottom:8px">
+          <button class="btn btn-ghost" onclick="abrirNovoComunicado()" style="font-size:14px">
+            📢 NOVO COMUNICADO
+          </button>
+        </div>
+        <button class="btn btn-gold" id="btnSortear" onclick="startFlow()" style="margin-bottom:10px">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+          NOVO SORTEIO
         </button>
       </div>
-      <button class="btn btn-gold" id="btnSortear" onclick="startFlow()" style="margin-bottom:10px">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-        NOVO SORTEIO
-      </button>
 
+      <!-- Controles admin (cancelar/concluir) -->
       <div id="homeAdminControls"></div>
-      <div id="homeComunicados"></div>
-      <div id="homePresenca"></div>
+
+      <!-- Histórico -->
       <div id="homePeladasHist"></div>
 
     </div>
