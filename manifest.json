@@ -1,6 +1,6 @@
 {
-  "name": "Pelada do Torneira",
-  "short_name": "Pelada do Torneira",
+  "name": "App do Torneira",
+  "short_name": "App do Torneira",
   "description": "Gerenciador inteligente de times para pelada",
   "start_url": "/Pelada_Torneira/",
   "scope": "/Pelada_Torneira/",

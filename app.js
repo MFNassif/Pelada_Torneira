@@ -342,49 +342,61 @@ async function firestoreDelete(col, id) {
 // ─── MATH ────────────────────────────────────────────────────
 function scoreRaw(g,a,v) { return +(g + a + W_VIT*v).toFixed(4); }
 
-// Calcula fator de contribuição individual vs média do time
-// Retorna um multiplicador entre 0.5 e 1.5 que penaliza quem teve
-// performance muito abaixo da média do seu time e premia quem superou
-function contribuicaoFator(statsJ, statsTime, nJogadoresTime) {
-  // statsJ: {gols, assists, vitorias} do jogador
-  // statsTime: {gols, assists, vitorias} totais de TODOS no time
-  if (!statsTime || nJogadoresTime <= 1) return 1;
+// ── SCORE DO DIA — fórmula com vitórias ponderadas pela participação ──────
+//
+// JOGADORES DE LINHA:
+//   scoreDia = (G+A) + W_VIT × v × fp
+//   fp (fator de participação nas vitórias):
+//     share = (G+A do jogador) / (G+A total do time)
+//     share ≥ 20% → fp = 1.0  (recebe 100% do peso de vitória)
+//     share = 0%  → fp = 0.25 (recebe 25% mínimo — estava em campo)
+//     entre 0% e 20%: interpolação linear
+//     Se time teve 0 G+A: fp = 1 (ninguém pode ser responsabilizado, distribuição igual)
+//
+// GOLEIROS:
+//   Não marcam G+A por definição. Única métrica disponível = vitórias.
+//   scoreDia = W_VIT × v × 2  (peso dobrado, pois vitória é 100% da contribuição)
+//   Goleiro com 3 vitórias → 4.5 pts ≈ jogador de linha com 2G+1A e 2 vitórias
 
-  const scoreJ   = statsJ.gols + statsJ.assists;
-  // Média de participação ofensiva (gols+assists) por jogador do time
-  const mediaOf  = (statsTime.gols + statsTime.assists) / nJogadoresTime;
-  // Vitórias são iguais para todos (reflexo coletivo), então não entram na contribuição individual
-  // mas participação ofensiva SIM diferencia quem fez diferença
+const SHARE_CHEIO  = 0.20; // share mínimo para receber 100% do peso de vitória
+const FP_MINIMO    = 0.25; // peso mínimo de vitória (0 G+A, mas estava em campo)
+const W_VIT_GOLEIRO = W_VIT * 2; // goleiro recebe peso dobrado nas vitórias
 
-  if (mediaOf === 0) return 1; // nenhum gol/assist no time → todos neutros
+function scoreDiaCalc(statsJ, statsTime, isGoleiro) {
+  const g = statsJ.gols    || 0;
+  const a = statsJ.assists || 0;
+  const v = statsJ.vitorias|| 0;
 
-  // Razão de contribuição: quanto acima/abaixo da média o jogador ficou
-  const razao = scoreJ / mediaOf;
-  // Escala suavizada: razao 0 → fator 0.55, razao 1 → fator 1.0, razao 2+ → fator 1.35
-  // Limitado entre 0.5 e 1.4 para não punir/premiar excessivamente
-  const fator = Math.max(0.50, Math.min(1.40, 0.55 + 0.45 * razao));
-  return +fator.toFixed(4);
+  // ── Goleiro ──────────────────────────────────────────────
+  if (isGoleiro) {
+    return +(W_VIT_GOLEIRO * v).toFixed(4);
+  }
+
+  // ── Jogador de linha ──────────────────────────────────────
+  let fp = 1;
+  if (statsTime && statsTime.n > 1) {
+    const gaTime = (statsTime.gols || 0) + (statsTime.assists || 0);
+    if (gaTime > 0) {
+      const share = (g + a) / gaTime;
+      if (share >= SHARE_CHEIO) {
+        fp = 1;
+      } else {
+        // Interpolação linear: 0% → 0.25, 20% → 1.0
+        fp = FP_MINIMO + (share / SHARE_CHEIO) * (1 - FP_MINIMO);
+      }
+    }
+    // gaTime === 0 → fp permanece 1 (ninguém tem G+A, vitórias divididas igual)
+  }
+
+  return +((g + a) + W_VIT * v * fp).toFixed(4);
 }
 
+// Rating acumulado: fórmula SIMPLES original (gols + assists + 0.75×vitórias).
+// Não usa ponderação — o rating reflete consistência de longo prazo.
 function scoreAcum(j) {
   const ativos = (j.domingos||[]).filter(d=>!d.ausente);
   if (!ativos.length) return 0;
-  const s = ativos.map(d=>{
-    const raw = scoreRaw(d.gols||0, d.assists||0, d.vitorias||0);
-    // Se o domingo tem dados de time, aplica fator de contribuição
-    if (d.teamStats && d.teamN) {
-      const fator = contribuicaoFator(
-        {gols: d.gols||0, assists: d.assists||0},
-        d.teamStats,
-        d.teamN
-      );
-      // O fator só ajusta a componente ofensiva, não as vitórias
-      const rawOf = (d.gols||0) + (d.assists||0);
-      const rawVit = W_VIT * (d.vitorias||0);
-      return +((rawOf * fator + rawVit)).toFixed(4);
-    }
-    return raw;
-  });
+  const s = ativos.map(d => scoreRaw(d.gols||0, d.assists||0, d.vitorias||0));
   return +(s.reduce((a,x)=>a+x,0)/s.length).toFixed(4);
 }
 function nDom(j) { return j.domingos?.length||0; }
@@ -642,6 +654,18 @@ function getPeriodoMensalidade() {
     inicioPt: inicioPeriodo.toLocaleDateString('pt-BR'),
     prazoPt: prazoPeriodo.toLocaleDateString('pt-BR'),
   };
+}
+
+// Chave do caixa: sempre mês calendário atual (vira no dia 1, independente do 5DU)
+function getCaixaMesKey() {
+  const hoje = new Date();
+  const mes = String(hoje.getMonth() + 1).padStart(2, '0');
+  const ano = hoje.getFullYear();
+  return `${ano}-${mes}`; // ex: "2025-04"
+}
+function getCaixaMesLabel() {
+  const hoje = new Date();
+  return hoje.toLocaleString('pt-BR', { month: 'long', year: 'numeric' });
 }
 
 function getMesReferencia() {
@@ -1233,7 +1257,7 @@ function abrirAdminPresenca() {
         <button onclick="setTamanhoTime(6)" class="${tamanhoAtual===6?'btn btn-gold':'btn btn-ghost'}" style="flex:1;font-size:13px" id="btnT6">6 jogadores</button>
       </div>
       <div style="font-size:11px;color:var(--t2);margin-bottom:14px;background:var(--s2);border-radius:8px;padding:8px 12px">
-        🧤 Se 2+ goleiros confirmados, o sistema usa times de 4 automaticamente
+        🧤 Se 2+ goleiros confirmados, o sistema usa 1 jogador a menos por time automaticamente
       </div>
 
       <div class="section-lbl" style="margin-bottom:8px">LOCAL E HORÁRIO</div>
@@ -1445,16 +1469,18 @@ function parsePeladaDate(dateStr) {
 }
 
 // ─── PRESENÇA HELPERS ────────────────────────────────────────
-// Retorna o tamanho de time efetivo: se há >=2 goleiros confirmados → 4, senão usa config da lista
+// Retorna o tamanho de time efetivo:
+// se há >=2 goleiros confirmados → tamanhoTime - 1 (1 jogador a menos)
+// senão usa a config da lista
 function getTamanhoTime(confirmados) {
   const p = appData.presenca;
-  // Goleiros confirmados
+  const base = p?.tamanhoTime || 5;
   const nGoleiros = (confirmados||[]).filter(id => {
     const j = appData.jogadores.find(x=>x.id===id);
     return j?.goleiro;
   }).length;
-  if (nGoleiros >= 2) return 4;
-  return p?.tamanhoTime || 5;
+  if (nGoleiros >= 2) return Math.max(3, base - 1);
+  return base;
 }
 
 function getVagasLimite(confirmados, espera) {
@@ -2910,6 +2936,12 @@ function renderOpcoes() {
   document.getElementById('sliderAlea').value = v;
   document.getElementById('aleaVal').textContent = v + '%';
   renderRestList();
+
+  // Admin tools block
+  const adminTools = document.getElementById('adminToolsOpcoes');
+  if (adminTools) {
+    adminTools.style.display = isAdmin ? 'block' : 'none';
+  }
 }
 function updateAlea() {
   if(!currentUser?.isAdmin){
@@ -3618,7 +3650,12 @@ async function salvarStats() {
       const domingoRec = { data, gols: stats.gols, assists: stats.assists, vitorias: stats.vitorias };
       if (ts) { domingoRec.teamStats = { gols: ts.gols, assists: ts.assists }; domingoRec.teamN = ts.n; }
       j.domingos.push(domingoRec);
-      const scoreDia = +(stats.gols + stats.assists + W_VIT * stats.vitorias).toFixed(4);
+      const isGoleiro = !!j.goleiro;
+      const scoreDia = scoreDiaCalc(
+        { gols: stats.gols, assists: stats.assists, vitorias: stats.vitorias },
+        ts ? { gols: ts.gols, assists: ts.assists, n: ts.n } : null,
+        isGoleiro
+      );
       peladaJogadores.push({ id, nome: j.nome, gols:stats.gols, assists:stats.assists, vitorias:stats.vitorias, scoreDia, ausente:false });
     }
     await firestoreSet('jogadores', id, j);
@@ -3719,6 +3756,75 @@ async function salvarStats() {
 
 
 // ─── VOTAÇÃO MVP ─────────────────────────────────────────────
+// ─── RECALCULAR SCORES HISTÓRICOS ───────────────────────────
+// Revisa o scoreDia de todos os jogadores em todas as peladas já registradas,
+// aplicando scoreDiaCalc (vitórias ponderadas por participação) e recalculando o scoreDia
+// armazenado em peladasHist. Não altera domingos[] dos jogadores (base do rating).
+async function recalcularScoresDias() {
+  if (!currentUser?.isAdmin) return;
+  if (!confirm(
+    'Recalcular o Score do Dia de todas as peladas históricas?\n\n' +
+    'Isso aplica o fator de contribuição individual (gols+assists vs média do time) ' +
+    'ao scoreDia exibido em cada pelada. O rating dos jogadores NÃO muda.\n\n' +
+    'Clique OK para continuar.'
+  )) return;
+
+  let updated = 0;
+  for (const pelada of (appData.peladasHist||[])) {
+    if (!pelada.jogadores?.length) continue;
+
+    // Reconstrói timesStats a partir dos dados salvos
+    const timesStats = {};
+    if (pelada.times) {
+      const timesArr = Object.values(pelada.times); // [teamArr, teamArr, ...]
+      timesArr.forEach((tm, ti) => {
+        if (!Array.isArray(tm)) return;
+        const totG = tm.reduce((s,id) => s + ((pelada.jogadores.find(j=>j.id===id))?.gols||0), 0);
+        const totA = tm.reduce((s,id) => s + ((pelada.jogadores.find(j=>j.id===id))?.assists||0), 0);
+        timesStats[ti] = { gols: totG, assists: totA, n: tm.length };
+      });
+    }
+
+    let changed = false;
+    for (const pj of pelada.jogadores) {
+      if (pj.ausente) continue;
+      const tiIdx = Object.values(pelada.times||{}).findIndex(tm => Array.isArray(tm) && tm.includes(pj.id));
+      const ts = (tiIdx >= 0 && timesStats[tiIdx]) ? timesStats[tiIdx] : null;
+      const jogador = appData.jogadores.find(x=>x.id===pj.id);
+      const isGoleiro = !!jogador?.goleiro;
+
+      const newScore = scoreDiaCalc(
+        { gols: pj.gols||0, assists: pj.assists||0, vitorias: pj.vitorias||0 },
+        ts ? { gols: ts.gols, assists: ts.assists, n: ts.n } : null,
+        isGoleiro
+      );
+
+      if (Math.abs(newScore - (pj.scoreDia||0)) > 0.0001) {
+        pj.scoreDia = newScore;
+        changed = true;
+      }
+    }
+
+    // Recalcula pódio se existia
+    if (changed && pelada.podio) {
+      const ativos = pelada.jogadores.filter(j=>!j.ausente);
+      const sorted = [...ativos].sort((a,b)=>b.scoreDia-a.scoreDia);
+      if (sorted.length >= 1) pelada.podio.primeiro  = sorted[0];
+      if (sorted.length >= 2) pelada.podio.segundo   = sorted[1];
+      if (sorted.length >= 3) pelada.podio.terceiro  = sorted[2];
+    }
+
+    if (changed) {
+      await firestoreSet('peladasHist', pelada.id, pelada);
+      updated++;
+    }
+  }
+  saveLocal();
+  showToast(`✅ ${updated} pelada${updated!==1?'s':''} recalculada${updated!==1?'s':''}!`);
+  renderPeladasHistorico();
+}
+window.recalcularScoresDias = recalcularScoresDias;
+
 async function votarBolaMurcha(peladaId, candidatoId) {
   if (!currentUser || currentUser.isGuest) { showToast('Você precisa estar logado para votar'); return; }
   const p = (appData.peladasHist||[]).find(x=>x.id===peladaId);
@@ -3982,14 +4088,14 @@ function renderFinancas() {
   // ── CAIXA ADMIN PANEL ─────────────────────────────────────
   let caixaHTML = '';
   if (isAdmin) {
-    const caixaMes = getMesReferencia();
-    const caixaKey = '_caixa_' + caixaMes;
+    const caixaMes  = getCaixaMesLabel();   // exibição: 'abril de 2026'
+    const caixaKey  = '_caixa_' + getCaixaMesKey(); // storage: '_caixa_2026-04'
     const caixaData = appData.financas[caixaKey] || { gastos: [] };
     // Recebido = pagamentos cujo descricao ou data contém o mês de referência
     const recebidoTotal = appData.jogadores.reduce((sum, j) => {
       const fin = getFinancasJogador(j.id);
       return sum + (fin.pagamentos||[]).filter(p =>
-        (p.descricao||'').toLowerCase().includes(caixaMes.toLowerCase()) ||
+        (p.descricao||'').toLowerCase().includes(getCaixaMesLabel().toLowerCase()) ||
         (p.data||'').includes(new Date().getFullYear().toString())
           && (p.data||'').includes(String(new Date().getMonth()+1).padStart(2,'0'))
       ).reduce((s,p) => s+(p.valor||0), 0);
@@ -4032,9 +4138,9 @@ function renderFinancas() {
               <div style="font-size:10px;color:var(--t2)">${g.data||''}</div>
             </div>
             <div style="font-family:'JetBrains Mono',monospace;font-size:13px;color:#ef4444">R$${(+g.valor).toFixed(2)}</div>
-            <button onclick="removerGastoCaixa('${caixaMes}',${i})" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:18px;padding:0 4px">×</button>
+            <button onclick="removerGastoCaixa('${getCaixaMesKey()}',${i})" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:18px;padding:0 4px">×</button>
           </div>`).join('') : '<div style="font-size:12px;color:var(--t3);margin-bottom:8px">Nenhum gasto registrado</div>'}
-        <button class="btn btn-ghost" style="margin-top:8px;font-size:12px" onclick="abrirAddGasto('${caixaMes}')">+ REGISTRAR GASTO</button>
+        <button class="btn btn-ghost" style="margin-top:8px;font-size:12px" onclick="abrirAddGasto('${getCaixaMesKey()}')">+ REGISTRAR GASTO</button>
       </div>`;
   }
 
@@ -4619,6 +4725,8 @@ window.abrirUploadFoto=abrirUploadFoto;
 window.salvarValores=salvarValores;
 window.salvarEditDomingo=salvarEditDomingo;
 window.setJogFiltro=setJogFiltro;
+window.getCaixaMesKey=getCaixaMesKey;
+window.getCaixaMesLabel=getCaixaMesLabel;
 // Expõe _fotoUploadTarget ao escopo global para labels inline em ES modules
 Object.defineProperty(window, '_fotoUploadTarget', {
   get() { return _fotoUploadTarget; },
