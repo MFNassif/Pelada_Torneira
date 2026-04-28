@@ -431,11 +431,14 @@ function calcIdx(jogs) {
   const med=medioGrupo(jogs);
   const adjs=jogs.map(j=>scoreAdj(j,med));
   const notas=jogs.map(j=>+(j.nota||5).toFixed(1));
-  const adjN=normGroup(adjs), notN=normGroup(notas);
+  // Score estatístico: normalizado relativamente ao grupo (0–1), depois × 10
+  // Nota opinativa: entra DIRETA na escala 0–10 (já é absoluta — 3.5 deve valer 3.5, não 0)
+  const adjN=normGroup(adjs);
   return jogs.map((j,i)=>{
     const n=nDomAtivo(j),a=alpha(n);
-    const IF=+((a*notN[i]+(1-a)*adjN[i])*10).toFixed(4); // 0-10 scale
-    return {id:j.id,nome:j.nome,nota:notas[i],notaN:notN[i],sAdj:adjs[i],sAdjN:adjN[i],alpha:a,IF,n,nTotal:nDom(j)};
+    const notaAbs = notas[i] / 10;          // 0–10 → 0–1 para o blend
+    const IF=+((a*notaAbs+(1-a)*adjN[i])*10).toFixed(4); // resultado final 0–10
+    return {id:j.id,nome:j.nome,nota:notas[i],notaN:notaAbs,sAdj:adjs[i],sAdjN:adjN[i],alpha:a,IF,n,nTotal:nDom(j)};
   });
 }
 
