@@ -473,9 +473,10 @@ function semanasAtraso5du() {
   return Math.floor(diffDias / 7); // 1 semana completa = R$5
 }
 
-function totalDebitoJogador(jogadorId) {
+function totalDebitoJogador(jogadorId, filtroDebito) {
   const fin = getFinancasJogador(jogadorId);
-  const debitos = (fin.debitos||[]).filter(d => !d.quitado); // só ativos
+  let debitos = (fin.debitos||[]).filter(d => !d.quitado);
+  if (filtroDebito) debitos = debitos.filter(filtroDebito);
   const total = debitos.reduce((s,d) => s + (d.valor||0), 0);
   const pago = (fin.pagamentos||[]).reduce((s,p) => s + (p.valor||0), 0);
   let saldo = Math.max(0, total - pago);
@@ -4103,9 +4104,25 @@ function renderFinancas() {
           && (p.data||'').includes(String(new Date().getMonth()+1).padStart(2,'0'))
       ).reduce((s,p) => s+(p.valor||0), 0);
     }, 0);
-    // Pendente = todos débitos em aberto
+    // Pendente = todos os débitos em aberto até o mês atual inclusive
+    // (exclui APENAS débitos de meses futuros — ex: mensalidade de maio gerada em abril)
+    const mesAtualNum = new Date().getMonth() + 1; // 1-12
+    const anoAtualNum = new Date().getFullYear();
+    function debitoNaoEhFuturo(d) {
+      if (!d.data) return true; // sem data → inclui por segurança
+      const parts = d.data.split('/');
+      if (parts.length === 3) {
+        const mm = parseInt(parts[1], 10);
+        const aaaa = parseInt(parts[2], 10);
+        // Futuro = ano maior, ou mesmo ano com mês maior
+        if (aaaa > anoAtualNum) return false;
+        if (aaaa === anoAtualNum && mm > mesAtualNum) return false;
+      }
+      return true;
+    }
+
     const pendente = appData.jogadores.reduce((sum, j) => {
-      return sum + Math.max(0, totalDebitoJogador(j.id));
+      return sum + Math.max(0, totalDebitoJogador(j.id, debitoNaoEhFuturo));
     }, 0);
     // Gastos do mês
     const gastos = (caixaData.gastos||[]);
