@@ -108,7 +108,7 @@ async function entrar() {
   const nome = document.getElementById('loginNome').value.trim();
   if (!nome) { showToast('Digite seu nome'); return; }
 
-  const match = appData.jogadores.find(j => j.nome.toLowerCase() === nome.toLowerCase());
+  const match = appData.jogadores.find(j => normAccent(j.nome) === normAccent(nome));
 
   if (match) {
     // Jogador cadastrado → pede senha
@@ -341,10 +341,50 @@ async function firestoreDelete(col, id) {
 
 // ─── MATH ────────────────────────────────────────────────────
 function scoreRaw(g,a,v) { return +(g + a + W_VIT*v).toFixed(4); }
+
+// Calcula fator de contribuição individual vs média do time
+// Retorna um multiplicador entre 0.5 e 1.5 que penaliza quem teve
+// performance muito abaixo da média do seu time e premia quem superou
+function contribuicaoFator(statsJ, statsTime, nJogadoresTime) {
+  // statsJ: {gols, assists, vitorias} do jogador
+  // statsTime: {gols, assists, vitorias} totais de TODOS no time
+  if (!statsTime || nJogadoresTime <= 1) return 1;
+
+  const scoreJ   = statsJ.gols + statsJ.assists;
+  // Média de participação ofensiva (gols+assists) por jogador do time
+  const mediaOf  = (statsTime.gols + statsTime.assists) / nJogadoresTime;
+  // Vitórias são iguais para todos (reflexo coletivo), então não entram na contribuição individual
+  // mas participação ofensiva SIM diferencia quem fez diferença
+
+  if (mediaOf === 0) return 1; // nenhum gol/assist no time → todos neutros
+
+  // Razão de contribuição: quanto acima/abaixo da média o jogador ficou
+  const razao = scoreJ / mediaOf;
+  // Escala suavizada: razao 0 → fator 0.55, razao 1 → fator 1.0, razao 2+ → fator 1.35
+  // Limitado entre 0.5 e 1.4 para não punir/premiar excessivamente
+  const fator = Math.max(0.50, Math.min(1.40, 0.55 + 0.45 * razao));
+  return +fator.toFixed(4);
+}
+
 function scoreAcum(j) {
   const ativos = (j.domingos||[]).filter(d=>!d.ausente);
   if (!ativos.length) return 0;
-  const s = ativos.map(d=>scoreRaw(d.gols||0,d.assists||0,d.vitorias||0));
+  const s = ativos.map(d=>{
+    const raw = scoreRaw(d.gols||0, d.assists||0, d.vitorias||0);
+    // Se o domingo tem dados de time, aplica fator de contribuição
+    if (d.teamStats && d.teamN) {
+      const fator = contribuicaoFator(
+        {gols: d.gols||0, assists: d.assists||0},
+        d.teamStats,
+        d.teamN
+      );
+      // O fator só ajusta a componente ofensiva, não as vitórias
+      const rawOf = (d.gols||0) + (d.assists||0);
+      const rawVit = W_VIT * (d.vitorias||0);
+      return +((rawOf * fator + rawVit)).toFixed(4);
+    }
+    return raw;
+  });
   return +(s.reduce((a,x)=>a+x,0)/s.length).toFixed(4);
 }
 function nDom(j) { return j.domingos?.length||0; }
@@ -620,21 +660,8 @@ function getMesReferencia() {
 }
 
 // ─── FUZZY ───────────────────────────────────────────────────
-function lev(a,b) {
-  a=a.toLowerCase();b=b.toLowerCase();
-  const dp=Array.from({length:a.length+1},(_,i)=>[i,...Array(b.length).fill(0)]);
-  for(let j=0;j<=b.length;j++)dp[0][j]=j;
-  for(let i=1;i<=a.length;i++) for(let j=1;j<=b.length;j++)
-    dp[i][j]=a[i-1]===b[j-1]?dp[i-1][j-1]:1+Math.min(dp[i-1][j],dp[i][j-1],dp[i-1][j-1]);
-  return dp[a.length][b.length];
-}
-function fuzzyFind(nome,lista) {
-  const n=nome.toLowerCase().trim();
-  const ex=lista.find(j=>j.nome.toLowerCase()===n); if(ex) return ex;
-  const ct=lista.find(j=>j.nome.toLowerCase().includes(n)||n.includes(j.nome.toLowerCase())); if(ct) return ct;
-  let best=null,bd=Infinity;
-  for(const j of lista){const d=lev(n,j.nome.toLowerCase());if(d<bd){bd=d;best=j;}}
-  return bd<=Math.max(3,Math.floor(n.length*.45))?best:null;
+function normAccent(s) {
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
 }
 
 // ─── NAV ─────────────────────────────────────────────────────
@@ -832,7 +859,7 @@ async function removerComunicado(id) {
 // ─── PRESENÇA ─────────────────────────────────────────────────
 function getDescricaoPelada(horario) {
   const domingo = getProximoDomingo();
-  return `Pelada do Torneira ${domingo}
+  return `App do Torneira — ${domingo}
 R. Juscelino Barbosa 254
 ${horario || '11:30 às 13:00'}
 Pix: mfnassif16@gmail.com`;
@@ -894,10 +921,13 @@ function renderPresenca() {
   const espera = presenca.espera || [];
   const total = confirmados.length;
 
-  // Regra de vagas: 15 + 5 espera; quando espera cheia (5) → expande pra 20 + 5 espera
+  // Regra de vagas dinâmica baseada no tamanho de time
   const vagas = getVagasLimite(confirmados, espera);
-  // Duração e horário mudam com 20 confirmados
-  const horario = total >= 20 ? '11:30 às 13:30' : '11:30 às 13:00';
+  const esperaMax = getEsperaLimite(confirmados);
+  const n = getTamanhoTime(confirmados);
+  // Duração e horário mudam com o número de times
+  const nTimes = total >= n*4 ? 4 : total >= n*3 ? 3 : Math.floor(total/n)||1;
+  const horario = total >= n*4 ? '11:30 às 13:30' : '11:30 às 13:00';
 
   const now = Date.now();
   const peladaDate = parsePeladaDate(dataLista);
@@ -915,7 +945,7 @@ function renderPresenca() {
   const inadimplente = ehJogadorCadastrado && !isGuest ? jogadorInadimplente(userId) : false;
   const ehMensalista = userId ? jogadorMensalista(userId) : false;
   const listaCheia = total >= vagas;
-  const esperaCheia = espera.length >= 5;
+  const esperaCheia = espera.length >= esperaMax;
 
   // Nomes ordenados alfabeticamente
   const confirmadosNomes = confirmados.map(id => {
@@ -967,7 +997,7 @@ function renderPresenca() {
       </div>` : ''}
     </div>
     <div class="card shield-card" style="margin-bottom:12px">
-      <div style="white-space:pre-line;font-size:13px;color:var(--text);line-height:1.7;margin-bottom:14px;font-weight:500">Pelada do Torneira ${dataExibir}
+      <div style="white-space:pre-line;font-size:13px;color:var(--text);line-height:1.7;margin-bottom:14px;font-weight:500">App do Torneira — ${dataExibir}
 ${localAtual}
 ${horarioAtual}
 Pix: mfnassif16@gmail.com</div>
@@ -989,8 +1019,8 @@ Pix: mfnassif16@gmail.com</div>
           </div>`).join('')}
       </div>` : ''}
       <div style="font-size:10px;color:var(--t3);margin-top:10px;margin-bottom:12px">
-        ${total}/${vagas} confirmados · ${espera.length}/5 espera
-        ${total >= 15 ? ` · <span style="color:var(--gold)">✓ ${total>=20?'4 times / 2h':'3 times / 1h30'}</span>` : ''}
+        ${total}/${vagas} confirmados · ${espera.length}/${esperaMax} espera
+        ${total >= n*3 ? ` · <span style="color:var(--gold)">✓ ${nTimes} times / ${nTimes>=4?'2h':'1h30'}</span>` : ''}
       </div>
       ${btnHTML}
     </div>`;
@@ -1175,11 +1205,36 @@ function abrirAdminPresenca() {
   const overlay = document.createElement('div');
   overlay.className = 'overlay open';
   overlay.id = 'modalAdminPresenca';
+  const presAtual = appData.presenca || { confirmados:[], espera:[], data: appData.ultimoSorteio?.data };
+  const tipoAtual = presAtual.tipoPelada || 'comum';
+  const tamanhoAtual = presAtual.tamanhoTime || 5;
   overlay.innerHTML = `
     <div class="modal" style="max-height:90vh;overflow-y:auto">
       <div class="mhandle"></div>
       <div class="m-title">GERENCIAR LISTA</div>
-      <div class="m-sub">Admin · ${presenca.confirmados.length} confirmados</div>
+      <div class="m-sub">Admin · ${presAtual.confirmados.length} confirmados</div>
+
+      <div class="section-lbl" style="margin-bottom:8px">TIPO DE PELADA</div>
+      <div style="display:flex;gap:8px;margin-bottom:16px">
+        <button id="btnTipoComum" onclick="setTipoPelada('comum')"
+          class="${tipoAtual==='comum'?'btn btn-gold':'btn btn-ghost'}" style="flex:1;font-size:13px">
+          ⚽ PELADA COMUM
+        </button>
+        <button id="btnTipoClassico" onclick="setTipoPelada('classico')"
+          class="${tipoAtual==='classico'?'btn btn-gold':'btn btn-ghost'}" style="flex:1;font-size:13px">
+          🏆 CLÁSSICO
+        </button>
+      </div>
+
+      <div class="section-lbl" style="margin-bottom:8px">TAMANHO DOS TIMES</div>
+      <div style="display:flex;gap:8px;margin-bottom:16px">
+        <button onclick="setTamanhoTime(4)" class="${tamanhoAtual===4?'btn btn-gold':'btn btn-ghost'}" style="flex:1;font-size:13px" id="btnT4">4 jogadores</button>
+        <button onclick="setTamanhoTime(5)" class="${tamanhoAtual===5?'btn btn-gold':'btn btn-ghost'}" style="flex:1;font-size:13px" id="btnT5">5 jogadores</button>
+        <button onclick="setTamanhoTime(6)" class="${tamanhoAtual===6?'btn btn-gold':'btn btn-ghost'}" style="flex:1;font-size:13px" id="btnT6">6 jogadores</button>
+      </div>
+      <div style="font-size:11px;color:var(--t2);margin-bottom:14px;background:var(--s2);border-radius:8px;padding:8px 12px">
+        🧤 Se 2+ goleiros confirmados, o sistema usa times de 4 automaticamente
+      </div>
 
       <div class="section-lbl" style="margin-bottom:8px">LOCAL E HORÁRIO</div>
       <div class="field"><label>Endereço</label>
@@ -1247,6 +1302,30 @@ function abrirAdminPresenca() {
   overlay.addEventListener('click', e => { if(e.target===overlay) overlay.remove(); });
   document.body.appendChild(overlay);
 }
+
+async function setTipoPelada(tipo) {
+  const p = appData.presenca;
+  if (!p) return;
+  p.tipoPelada = tipo;
+  appData.presenca = p;
+  await firestoreSet('config','presenca',p);
+  saveLocal();
+  document.getElementById('modalAdminPresenca')?.remove();
+  abrirAdminPresenca();
+}
+window.setTipoPelada = setTipoPelada;
+
+async function setTamanhoTime(n) {
+  const p = appData.presenca;
+  if (!p) return;
+  p.tamanhoTime = n;
+  appData.presenca = p;
+  await firestoreSet('config','presenca',p);
+  saveLocal();
+  document.getElementById('modalAdminPresenca')?.remove();
+  abrirAdminPresenca();
+}
+window.setTamanhoTime = setTamanhoTime;
 
 async function adminAdicionarPresenca(lista) {
   const sel = document.getElementById('apAddJog')?.value;
@@ -1366,13 +1445,34 @@ function parsePeladaDate(dateStr) {
 }
 
 // ─── PRESENÇA HELPERS ────────────────────────────────────────
+// Retorna o tamanho de time efetivo: se há >=2 goleiros confirmados → 4, senão usa config da lista
+function getTamanhoTime(confirmados) {
+  const p = appData.presenca;
+  // Goleiros confirmados
+  const nGoleiros = (confirmados||[]).filter(id => {
+    const j = appData.jogadores.find(x=>x.id===id);
+    return j?.goleiro;
+  }).length;
+  if (nGoleiros >= 2) return 4;
+  return p?.tamanhoTime || 5;
+}
+
 function getVagasLimite(confirmados, espera) {
-  // Regra:
-  // - Começa com 15 vagas + 5 espera
-  // - Se a espera estiver cheia (5/5), a lista expande para 20 vagas + 5 espera
-  // - Máximo absoluto: 20 confirmados + 5 espera
-  const totalEspera = (espera||[]).length;
-  return (totalEspera >= 5 || (confirmados||[]).length >= 20) ? 20 : 15;
+  // Lógica: times * n + espera n; quando espera cheia → sobe 1 multiplicador
+  // Times de n jogadores: 3 times → confirmados = n*3, espera = n
+  // Ao completar espera → 4 times → confirmados = n*4 + espera = n
+  const n = getTamanhoTime(confirmados);
+  const totalConf = (confirmados||[]).length;
+  const totalEsp  = (espera||[]).length;
+  // Patamar atual de times (começa em 3)
+  // Se espera cheia e ainda não no próximo patamar → expande
+  if (totalEsp >= n || totalConf >= n*4) return n*4;
+  return n*3;
+}
+
+function getEsperaLimite(confirmados) {
+  const n = getTamanhoTime(confirmados);
+  return n;
 }
 
 async function promoverDaEspera(presencaObj, motivo) {
@@ -1442,8 +1542,9 @@ async function confirmarPresenca() {
   }
 
   const vagas = getVagasLimite(p.confirmados, p.espera);
+  const esperaMax2 = getEsperaLimite(p.confirmados);
   const listaCheia = p.confirmados.length >= vagas;
-  const esperaCheia = p.espera.length >= 5;
+  const esperaCheia = p.espera.length >= esperaMax2;
 
   if (!listaCheia) {
     // Vaga disponível → confirmar
@@ -1457,9 +1558,8 @@ async function confirmarPresenca() {
     const ultimoAvulso = [...p.confirmados].reverse().find(id => !jogadorMensalista(id));
     if (ultimoAvulso && !esperaCheia) {
       p.confirmados = p.confirmados.filter(id => id !== ultimoAvulso);
-      p.espera.push(ultimoAvulso); // avulso vai pro FIM da espera (mantém ordem de chegada)
+      p.espera.push(ultimoAvulso);
       p.confirmados.push(uid);
-      // Cancelar o débito do avulso deslocado (ele não vai jogar)
       const finDesloc = getFinancasJogador(ultimoAvulso);
       if (finDesloc.debitos) {
         const idxDeb = [...finDesloc.debitos].reverse()
@@ -1479,7 +1579,7 @@ async function confirmarPresenca() {
     }
   } else {
     // Lista cheia, avulso → vai para espera
-    if (esperaCheia) { showToast('Lista de espera cheia (5/5)'); return; }
+    if (esperaCheia) { showToast(`Lista de espera cheia (${esperaMax2}/${esperaMax2})`); return; }
     p.espera.push(uid);
     showToast('Adicionado à lista de espera ✅');
   }
@@ -1605,7 +1705,7 @@ function renderPeladasHistorico() {
           <div style="font-size:18px">${podeVotar ? '⭐' : '🏆'}</div>
           <div style="flex:1">
             <div style="font-family:'Oswald',sans-serif;font-size:14px;font-weight:700;letter-spacing:1px;color:var(--gold-lt)">
-              PELADA DO TORNEIRA ${data}
+              PELADA — APP DO TORNEIRA — ${data}
             </div>
             <div style="font-size:11px;color:var(--t2);margin-top:2px">
               ${jogNaData} jogadores${p ? ` · ${votAberta
@@ -1649,87 +1749,152 @@ function openPeladaDetalhe(peladaId) {
 
   // Time remaining
   let tempoHTML = '';
-  if (v?.status === 'aberta') {
-    const remaining = Math.max(0, v.elapsesAt - Date.now());
+  if (v?.status === 'aberta' || p.votacaoBolaMurcha?.status === 'aberta') {
+    const remaining = Math.max(0, (v?.elapsesAt || p.votacaoBolaMurcha?.elapsesAt || 0) - Date.now());
     const horas = Math.floor(remaining / 3600000);
     const min = Math.floor((remaining % 3600000) / 60000);
-    const totalVotos = Object.keys(v.votos||{}).length;
-    const totalEleg = v.elegiveisVotar?.length || 0;
+    const totalMvp = Object.keys(v?.votos||{}).length;
+    const totalBm  = Object.keys(p.votacaoBolaMurcha?.votos||{}).length;
+    const totalEleg = v?.elegiveisVotar?.length || p.votacaoBolaMurcha?.elegiveisVotar?.length || 0;
+    const meuVotoBm = p.votacaoBolaMurcha?.votos?.[currentUser?.id];
+    const meuVotoMvp = v?.votos?.[currentUser?.id];
     tempoHTML = `<div style="background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.25);border-radius:10px;padding:12px 14px;margin-bottom:14px">
-      <div style="font-size:9px;letter-spacing:2px;text-transform:uppercase;color:#eab308;font-weight:600;margin-bottom:6px">⏳ VOTAÇÃO MVP ABERTA</div>
-      <div style="font-size:12px;color:var(--t2)">Encerra em <strong style="color:var(--text)">${horas}h ${min}min</strong> · ${totalVotos}/${totalEleg} votos</div>
-      ${currentUser?.isAdmin ? `<button onclick="encerrarVotacaoForce('${p.id}')" style="margin-top:8px;background:rgba(234,179,8,.15);border:1px solid rgba(234,179,8,.3);border-radius:8px;color:#eab308;font-family:'Oswald',sans-serif;font-size:12px;letter-spacing:1px;padding:6px 14px;cursor:pointer;width:100%">⚡ ENCERRAR VOTAÇÃO AGORA</button>` : ''}
+      <div style="font-size:9px;letter-spacing:2px;text-transform:uppercase;color:#eab308;font-weight:600;margin-bottom:6px">⏳ VOTAÇÕES ABERTAS</div>
+      <div style="font-size:12px;color:var(--t2)">Encerra em <strong style="color:var(--text)">${horas}h ${min}min</strong></div>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <div style="flex:1;background:rgba(201,168,76,.08);border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:10px;color:var(--t2)">⭐ MVP</div>
+          <div style="font-size:12px;color:${meuVotoMvp?'#22c55e':'var(--gold)'}">${totalMvp}/${totalEleg} ${meuVotoMvp?'✓ votei':'—'}</div>
+        </div>
+        <div style="flex:1;background:rgba(239,68,68,.06);border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:10px;color:var(--t2)">🎈 Bola Murcha</div>
+          <div style="font-size:12px;color:${meuVotoBm?'#22c55e':'#ef4444'}">${totalBm}/${totalEleg} ${meuVotoBm?'✓ votei':'—'}</div>
+        </div>
+      </div>
+      ${currentUser?.isAdmin ? `<button onclick="encerrarVotacaoForce('${p.id}')" style="margin-top:8px;background:rgba(234,179,8,.15);border:1px solid rgba(234,179,8,.3);border-radius:8px;color:#eab308;font-family:'Oswald',sans-serif;font-size:12px;letter-spacing:1px;padding:6px 14px;cursor:pointer;width:100%">⚡ ENCERRAR VOTAÇÕES AGORA</button>` : ''}
     </div>`;
   }
 
-  // Voting UI
-  let votacaoHTML = '';
+  // ── Voting UI — MVP + Bola Murcha ──────────────────────────
+  const bm = p.votacaoBolaMurcha;
+  const meuVotoBm  = bm?.votos?.[currentUser?.id];
+  const jaVotouBm  = !!meuVotoBm;
+  const podeVotarBm = !currentUser?.isGuest
+    && !jaVotouBm
+    && bm?.status === 'aberta'
+    && (bm?.elegiveisVotar?.includes(currentUser?.id)
+        || (p.jogadores||[]).some(j=>j.id===currentUser?.id&&!j.ausente));
+
+  function buildVoteStatus(votosObj, elegiveisArr) {
+    return (elegiveisArr||[]).map(eid => {
+      const jj = appData.jogadores.find(x=>x.id===eid);
+      return { id: eid, nome: jj?.nome||eid, votou: !!votosObj?.[eid] };
+    });
+  }
+  function statusPills(arr) {
+    return arr.map(s=>`<span style="color:${s.votou?'#22c55e':'var(--t3)'};">${s.nome}${s.votou?'✓':''}</span>`).join(' · ');
+  }
+
+  let mvpHTML = '';
   if (v && v.nominees?.length > 0) {
+    const statusV = buildVoteStatus(v.votos, v.elegiveisVotar);
     if (v.status === 'encerrada' || p.mvp) {
-      // Show result
-      const contagem = {};
-      for (const vt of Object.values(v.votos||{})) contagem[vt] = (contagem[vt]||0)+1;
-      votacaoHTML = `
-        <div class="section-lbl">VOTAÇÃO MVP</div>
-        ${v.nominees.map(n => {
-          const votos = contagem[n.id]||0;
-          const isWinner = p.mvp?.id === n.id;
-          return `<div style="background:${isWinner?'rgba(201,168,76,.1)':'var(--s2)'};border:1px solid ${isWinner?'var(--border-gold)':'var(--border)'};border-radius:10px;padding:11px 14px;margin-bottom:8px;display:flex;align-items:center;gap:10px">
-            <div style="font-size:20px">${isWinner?'⭐':'👤'}</div>
+      const cont = {}; for (const vt of Object.values(v.votos||{})) cont[vt]=(cont[vt]||0)+1;
+      mvpHTML = `<div class="section-lbl">⭐ VOTAÇÃO MVP</div>` +
+        v.nominees.map(n=>{
+          const vc=cont[n.id]||0, win=p.mvp?.id===n.id;
+          const quem = statusV.filter(s=>v.votos[s.id]===n.id).map(s=>s.nome).join(', ');
+          return `<div style="background:${win?'rgba(201,168,76,.1)':'var(--s2)'};border:1px solid ${win?'var(--border-gold)':'var(--border)'};border-radius:10px;padding:11px 14px;margin-bottom:8px;display:flex;align-items:center;gap:10px">
+            <div style="font-size:20px">${win?'⭐':'👤'}</div>
             <div style="flex:1">
-              <div style="font-weight:600;font-size:14px;color:${isWinner?'var(--gold-lt)':'var(--text)'}">${n.nome}${isWinner?' <span style="font-size:10px;color:var(--gold)">MVP</span>':''}</div>
+              <div style="font-weight:600;font-size:14px;color:${win?'var(--gold-lt)':'var(--text)'}">${n.nome}${win?' <span style="font-size:10px;color:var(--gold)">MVP</span>':''}</div>
               <div style="font-size:11px;color:var(--t2)">Score ${n.scoreDia.toFixed(2)} · ⚽${n.gols} 🎯${n.assists} 🏆${n.vitorias}</div>
+              ${quem?`<div style="font-size:10px;color:var(--t2)">Votos: ${quem}</div>`:''}
             </div>
-            <div style="font-family:'JetBrains Mono',monospace;font-size:16px;color:${isWinner?'var(--gold)':'var(--t2)'};">${votos} voto${votos!==1?'s':''}</div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:16px;color:${win?'var(--gold)':'var(--t2)'};">${vc}</div>
           </div>`;
-        }).join('')}`;
+        }).join('') +
+        `<div style="font-size:10px;color:var(--t2);margin-bottom:4px">${statusPills(statusV)}</div>`;
     } else if (v.status === 'aberta') {
-      // Show voting buttons if eligible
       if (podeVotarFinal) {
-        votacaoHTML = `
-          <div class="section-lbl">VOTE NO MVP</div>
-          <div style="font-size:12px;color:var(--t2);margin-bottom:12px">Quem foi o melhor dessa pelada?</div>
-          ${v.nominees.map(n => {
-            const isSelf = n.id === currentUser?.id;
+        mvpHTML = `<div class="section-lbl">⭐ VOTE NO MVP</div><div style="font-size:12px;color:var(--t2);margin-bottom:10px">Quem foi o melhor?</div>` +
+          v.nominees.map(n=>{
+            const self=n.id===currentUser?.id;
             return `<div style="background:var(--s2);border:1px solid var(--border-gold);border-radius:10px;padding:11px 14px;margin-bottom:8px;display:flex;align-items:center;gap:10px">
               <div style="flex:1">
-                <div style="font-weight:600;font-size:14px">${n.nome}${isSelf?' <span style="font-size:10px;color:var(--t2)">(você)</span>':''}</div>
+                <div style="font-weight:600;font-size:14px">${n.nome}${self?' <span style="font-size:10px;color:var(--t2)">(você)</span>':''}</div>
                 <div style="font-size:11px;color:var(--t2)">Score ${n.scoreDia.toFixed(2)} · ⚽${n.gols} 🎯${n.assists} 🏆${n.vitorias}</div>
               </div>
-              ${isSelf
-                ? `<div style="font-size:11px;color:var(--t3);font-style:italic">Não pode votar em si</div>`
-                : `<button class="btn btn-gold" style="width:auto;padding:8px 16px;font-size:13px" onclick="votarMvp('${p.id}','${n.id}')">VOTAR</button>`
-              }
+              ${self?`<div style="font-size:11px;color:var(--t3)">Não pode votar em si</div>`:`<button class="btn btn-gold" style="width:auto;padding:8px 16px;font-size:13px" onclick="votarMvp('${p.id}','${n.id}')">VOTAR</button>`}
             </div>`;
-          }).join('')}`;
+          }).join('') +
+          `<div style="font-size:10px;color:var(--t2);margin-top:2px">${statusPills(statusV)}</div>`;
       } else if (jaVotou) {
-        const nomineeVotado = v.nominees.find(n=>n.id===meuVoto);
-        votacaoHTML = `
-          <div class="section-lbl">VOTAÇÃO MVP</div>
+        const nom = v.nominees.find(n=>n.id===meuVoto);
+        mvpHTML = `<div class="section-lbl">⭐ VOTAÇÃO MVP</div>
           <div style="background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px;font-size:13px;color:var(--t2)">
-            ✅ Você votou em <strong style="color:var(--text)">${nomineeVotado?.nome||meuVoto}</strong>. Aguardando demais votantes.
-          </div>
-          ${v.nominees.map(n => `
-            <div style="background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:6px;display:flex;align-items:center;gap:10px">
-              <div style="flex:1"><div style="font-weight:600;font-size:13px">${n.nome}</div>
-              <div style="font-size:11px;color:var(--t2)">Score ${n.scoreDia.toFixed(2)} · ⚽${n.gols} 🎯${n.assists} 🏆${n.vitorias}</div></div>
-              ${meuVoto===n.id?'<div style="color:var(--gold);font-size:12px">✅ Seu voto</div>':''}
-            </div>`).join('')}`;
+            ✅ Você votou em <strong style="color:var(--text)">${nom?.nome||meuVoto}</strong></div>` +
+          v.nominees.map(n=>`<div style="background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:6px;display:flex;align-items:center;gap:10px">
+            <div style="flex:1"><div style="font-weight:600;font-size:13px">${n.nome}</div>
+            <div style="font-size:11px;color:var(--t2)">Score ${n.scoreDia.toFixed(2)} · ⚽${n.gols} 🎯${n.assists} 🏆${n.vitorias}</div></div>
+            ${meuVoto===n.id?'<div style="color:var(--gold);font-size:12px">✅ seu voto</div>':''}
+          </div>`).join('') +
+          `<div style="font-size:10px;color:var(--t2);margin-top:2px">${statusPills(statusV)}</div>`;
       } else {
-        // Not eligible to vote
-        const totalVotos = Object.keys(v.votos||{}).length;
-        const totalEleg = v.elegiveisVotar?.length || 0;
-        votacaoHTML = `
-          <div class="section-lbl">VOTAÇÃO MVP</div>
-          <div style="font-size:12px;color:var(--t2);margin-bottom:10px">Votação em andamento (${totalVotos}/${totalEleg}). Candidatos:</div>
-          ${v.nominees.map(n => `
-            <div style="background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:6px">
-              <div style="font-weight:600;font-size:13px">${n.nome}</div>
-              <div style="font-size:11px;color:var(--t2)">Score ${n.scoreDia.toFixed(2)} · ⚽${n.gols} 🎯${n.assists} 🏆${n.vitorias}</div>
-            </div>`).join('')}`;
+        mvpHTML = `<div class="section-lbl">⭐ VOTAÇÃO MVP</div><div style="font-size:12px;color:var(--t2);margin-bottom:8px">Candidatos:</div>` +
+          v.nominees.map(n=>`<div style="background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:6px">
+            <div style="font-weight:600;font-size:13px">${n.nome}</div>
+            <div style="font-size:11px;color:var(--t2)">Score ${n.scoreDia.toFixed(2)} · ⚽${n.gols} 🎯${n.assists} 🏆${n.vitorias}</div>
+          </div>`).join('') +
+          `<div style="font-size:10px;color:var(--t2);margin-top:2px">${statusPills(statusV)}</div>`;
       }
     }
   }
+
+  let bmHTML = '';
+  if (bm) {
+    const candidatos = (p.jogadores||[]).filter(j=>!j.ausente);
+    const contBm = {}; for (const v2 of Object.values(bm.votos||{})) contBm[v2]=(contBm[v2]||0)+1;
+    const statusBm = buildVoteStatus(bm.votos, bm.elegiveisVotar);
+    if (bm.status==='encerrada' || p.bolaMurcha) {
+      bmHTML = `<div class="section-lbl" style="margin-top:12px">🎈 BOLA MURCHA</div>` +
+        candidatos.sort((a,b)=>(contBm[b.id]||0)-(contBm[a.id]||0)).map(n=>{
+          const vc=contBm[n.id]||0, lose=p.bolaMurcha?.id===n.id;
+          const quem=statusBm.filter(s=>bm.votos[s.id]===n.id).map(s=>s.nome).join(', ');
+          return `<div style="background:${lose?'rgba(239,68,68,.08)':'var(--s2)'};border:1px solid ${lose?'rgba(239,68,68,.3)':'var(--border)'};border-radius:10px;padding:10px 14px;margin-bottom:6px;display:flex;align-items:center;gap:8px">
+            <div style="font-size:18px">${lose?'🎈':'👤'}</div>
+            <div style="flex:1">
+              <div style="font-weight:600;font-size:13px;color:${lose?'#ef4444':'var(--text)'}">${n.nome}${lose?' 🎈':''}</div>
+              ${quem?`<div style="font-size:10px;color:var(--t2)">Votos: ${quem}</div>`:''}
+            </div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:15px;color:${lose?'#ef4444':'var(--t2)'};">${vc}</div>
+          </div>`;
+        }).join('') +
+        `<div style="font-size:10px;color:var(--t2)">${statusPills(statusBm)}</div>`;
+    } else if (bm.status==='aberta') {
+      if (podeVotarBm) {
+        bmHTML = `<div class="section-lbl" style="margin-top:12px">🎈 VOTE NA BOLA MURCHA</div>
+          <div style="font-size:12px;color:var(--t2);margin-bottom:10px">Quem foi o mais murcho?</div>` +
+          candidatos.map(n=>`<div style="background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.2);border-radius:10px;padding:10px 14px;margin-bottom:6px;display:flex;align-items:center;gap:8px">
+            <div style="flex:1"><div style="font-size:13px;font-weight:500">${n.nome}</div></div>
+            <button onclick="votarBolaMurcha('${p.id}','${n.id}')" style="background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.3);border-radius:8px;color:#ef4444;font-size:12px;padding:6px 12px;cursor:pointer;font-family:'Oswald',sans-serif;letter-spacing:1px">VOTAR</button>
+          </div>`).join('') +
+          `<div style="font-size:10px;color:var(--t2);margin-top:2px">${statusPills(statusBm)}</div>`;
+      } else if (jaVotouBm) {
+        const nomBm = candidatos.find(c=>c.id===meuVotoBm)?.nome||meuVotoBm;
+        bmHTML = `<div class="section-lbl" style="margin-top:12px">🎈 BOLA MURCHA</div>
+          <div style="background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px;font-size:13px;color:var(--t2)">
+            ✅ Você votou em <strong style="color:#ef4444">${nomBm}</strong></div>
+          <div style="font-size:10px;color:var(--t2)">${statusPills(statusBm)}</div>`;
+      } else {
+        bmHTML = `<div class="section-lbl" style="margin-top:12px">🎈 BOLA MURCHA</div>
+          <div style="font-size:12px;color:var(--t2);margin-bottom:6px">Votação em andamento.</div>
+          <div style="font-size:10px;color:var(--t2)">${statusPills(statusBm)}</div>`;
+      }
+    }
+  }
+
+  let votacaoHTML = mvpHTML + bmHTML;
 
   // Podium block
   let podioHTML = '';
@@ -2024,14 +2189,26 @@ async function reagir(peladaId, jogadorId, emoji) {
 }
 window.reagir = reagir;
 // ─── JOGADORES ───────────────────────────────────────────────
+// ─── JOGADORES / ELENCO ──────────────────────────────────────
+let jogFiltro = 'todos';
+function setJogFiltro(f) {
+  jogFiltro = f;
+  document.querySelectorAll('[data-jf]').forEach(c => c.classList.toggle('sel', c.dataset.jf === f));
+  renderJogs();
+}
+window.setJogFiltro = setJogFiltro;
+
 function renderJogs() {
   const list=document.getElementById('jogList');
   const ct=document.getElementById('jogCount');
   const n=appData.jogadores.length;
   ct.textContent=`${n} jogador${n!==1?'es':''} cadastrado${n!==1?'s':''}`;
-  if(!n){list.innerHTML=`<div class="empty"><div class="empty-ico">⚽</div><div class="empty-txt">Nenhum jogador ainda.<br>Admins podem cadastrar jogadores.</div></div>`;return;}
+  let jogs = appData.jogadores;
+  if (jogFiltro === 'mensal') jogs = jogs.filter(j => j.tipoJogador === 'mensalista');
+  else if (jogFiltro === 'avulso') jogs = jogs.filter(j => j.tipoJogador !== 'mensalista');
+  if(!jogs.length){list.innerHTML=`<div class="empty"><div class="empty-ico">⚽</div><div class="empty-txt">Nenhum jogador nesta categoria.</div></div>`;return;}
   const idxMap=Object.fromEntries(calcIdx(appData.jogadores).map(i=>[i.id,i]));
-  list.innerHTML=appData.jogadores.map(j=>{
+  list.innerHTML=jogs.map(j=>{
     const ix=idxMap[j.id], nd=nDom(j);
     const isAdm=(appData.admins||[]).includes(j.id);
     const ifStr=nd>0?ix?.IF.toFixed(2):null;
@@ -2064,7 +2241,19 @@ function openCadastro(id=null) {
   document.getElementById('inpNome').value='';
   document.getElementById('inpNota').value='';
   document.getElementById('editId').value=id||'';
-  if(id){const j=appData.jogadores.find(x=>x.id===id);if(j){document.getElementById('inpNome').value=j.nome;document.getElementById('inpNota').value=j.nota?.toFixed(1);const sel=document.getElementById('inpTipo');if(sel)sel.value=j.tipoJogador||'avulso';}}
+  if(id){
+    const j=appData.jogadores.find(x=>x.id===id);
+    if(j){
+      document.getElementById('inpNome').value=j.nome;
+      document.getElementById('inpNota').value=j.nota?.toFixed(1);
+      const sel=document.getElementById('inpTipo');if(sel)sel.value=j.tipoJogador||'avulso';
+      const clube=document.getElementById('inpClube');if(clube)clube.value=j.clube||'';
+      const goleiro=document.getElementById('inpGoleiro');if(goleiro)goleiro.checked=!!j.goleiro;
+    }
+  } else {
+    const clube=document.getElementById('inpClube');if(clube)clube.value='';
+    const goleiro=document.getElementById('inpGoleiro');if(goleiro)goleiro.checked=false;
+  }
   openModal('modalCadastro');
 }
 
@@ -2077,23 +2266,25 @@ async function salvarJogador() {
   if(isNaN(notaVal)||notaVal<0||notaVal>10){showToast('Nota deve ser 0–10');return;}
   const nota=+notaVal.toFixed(1);
   const tipo = document.getElementById('inpTipo')?.value || 'avulso';
-  // Check duplicate name (case-insensitive), ignoring the player being edited
-  const nomeLower = nome.toLowerCase();
+  const clube = document.getElementById('inpClube')?.value || '';
+  const goleiro = document.getElementById('inpGoleiro')?.checked || false;
+  // Check duplicate name (accent-insensitive), ignoring the player being edited
+  const nomeLower = normAccent(nome);
   const duplicado = appData.jogadores.find(j =>
-    j.nome.toLowerCase() === nomeLower && j.id !== editId
+    normAccent(j.nome) === nomeLower && j.id !== editId
   );
   if (duplicado) { showToast(`Já existe um jogador chamado "${duplicado.nome}"`); return; }
 
   if(editId){
     const j=appData.jogadores.find(x=>x.id===editId);
-    if(j){j.nome=nome;j.nota=nota;j.tipoJogador=tipo;await firestoreSet('jogadores',editId,j);}
+    if(j){j.nome=nome;j.nota=nota;j.tipoJogador=tipo;j.clube=clube;j.goleiro=goleiro;await firestoreSet('jogadores',editId,j);}
   } else {
     // Check mensalista limit
     if (tipo==='mensalista' && appData.jogadores.filter(j=>j.tipoJogador==='mensalista').length >= 15) {
       showToast('Limite de 15 mensalistas atingido'); return;
     }
     const id='p'+Date.now();
-    const nj={id,nome,nota,tipoJogador:tipo,domingos:[],criadoEm:Date.now()};
+    const nj={id,nome,nota,tipoJogador:tipo,clube,goleiro,domingos:[],criadoEm:Date.now()};
     appData.jogadores.push(nj);
     await firestoreSet('jogadores',id,nj);
   }
@@ -2173,6 +2364,7 @@ function renderRankList() {
       case 'vitorias': va = a.tv;   vb = b.tv;   break;
       case 'domingos': va = a.nd;   vb = b.nd;   break;
       case 'mvps':     va = a.j.mvps||0; vb = b.j.mvps||0; break;
+      case 'bm':       va = a.j.bolaMurchas||0; vb = b.j.bolaMurchas||0; break;
       default:         va = a.IF;   vb = b.IF;
     }
     return mul * (va - vb);
@@ -2189,12 +2381,14 @@ function renderRankList() {
     const IF_str  = nd > 0 && ix ? ix.IF.toFixed(2)  : '—';
     const nota_str = j.nota?.toFixed(1) ?? '—';
     const mvps = j.mvps || 0;
+    const bms  = j.bolaMurchas || 0;
 
     return `<div class="prow rank-row" onclick="openPerfil('${j.id}')">
       <div class="rank-row-top">
         <div class="rank-n ${cl}">${medal}</div>
         <div class="rank-name-col">
-          <div class="p-name">${j.nome}${isAdm ? '<span class="badge-adm">ADM</span>' : ''}${mvps>0?`<span style="background:linear-gradient(135deg,var(--gold),var(--gold-lt));color:#000;font-size:8px;padding:1px 6px;border-radius:99px;font-family:Oswald,sans-serif;letter-spacing:1px;margin-left:5px">⭐${mvps}</span>`:''}
+          <div class="p-name">${j.nome}${isAdm ? '<span class="badge-adm">ADM</span>' : ''}${mvps>0?`<span style="background:linear-gradient(135deg,var(--gold),var(--gold-lt));color:#000;font-size:8px;padding:1px 6px;border-radius:99px;font-family:Oswald,sans-serif;letter-spacing:1px;margin-left:5px">⭐${mvps}</span>`:''
+            }${bms>0?`<span style="background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.3);color:#ef4444;font-size:8px;padding:1px 6px;border-radius:99px;font-family:Oswald,sans-serif;letter-spacing:1px;margin-left:4px">🎈${bms}</span>`:''}
           </div>
         </div>
       </div>
@@ -2205,7 +2399,8 @@ function renderRankList() {
         <div class="rank-stat ${rankStat==='assists'  ?'hl':''}"><div class="rs-v">${ta}</div><div class="rs-l">🎯</div></div>
         <div class="rank-stat ${rankStat==='vitorias' ?'hl':''}"><div class="rs-v">${tv}</div><div class="rs-l">🏆</div></div>
         <div class="rank-stat ${rankStat==='domingos' ?'hl':''}"><div class="rs-v">${nd}</div><div class="rs-l">Dom</div></div>
-        <div class="rank-stat ${rankStat==='mvps'     ?'hl':''}"><div class="rs-v">${mvps>0?'⭐'+mvps:'—'}</div><div class="rs-l">MVP</div></div>
+        <div class="rank-stat ${rankStat==='mvps'     ?'hl':''}" style="border-right:1px solid var(--border)"><div class="rs-v">${mvps>0?'⭐'+mvps:'—'}</div><div class="rs-l">MVP</div></div>
+        <div class="rank-stat ${rankStat==='bm'       ?'hl':''}" ><div class="rs-v">${bms>0?'🎈'+bms:'—'}</div><div class="rs-l">Murcha</div></div>
       </div>
     </div>`;
   }).join('');
@@ -2260,7 +2455,7 @@ function openPerfil(id) {
   document.getElementById('perfilBody').innerHTML=`
     <div style="text-align:center;margin-bottom:14px">
       ${fotoHTML}
-      ${canEditPhoto ? `<label for="fotoInputGlobal" onclick="_fotoUploadTarget='${j.id}'" style="display:inline-block;background:var(--s2);border:1px solid var(--border-gold);border-radius:99px;color:var(--gold);font-size:11px;padding:5px 14px;cursor:pointer;font-family:'DM Sans',sans-serif">📷 ${j.foto ? 'Trocar foto' : 'Adicionar foto'}</label>` : ''}
+      ${canEditPhoto ? `<label for="fotoInputGlobal" onclick="window._fotoUploadTarget='${j.id}'" style="display:inline-block;background:var(--s2);border:1px solid var(--border-gold);border-radius:99px;color:var(--gold);font-size:11px;padding:5px 14px;cursor:pointer;font-family:'DM Sans',sans-serif">📷 ${j.foto ? 'Trocar foto' : 'Adicionar foto'}</label>` : ''}
     </div>
     <div class="m-title" style="text-align:center">${j.nome}</div>
     <div class="m-sub" style="text-align:center">Nota opinativa: ${j.nota?.toFixed(1)}</div>
@@ -2316,7 +2511,7 @@ function openPerfilProprio() {
     </div>
     <button onclick="document.getElementById('userFloatMenu')?.remove();openPerfil('${currentUser.id}')" style="width:100%;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 10px;text-align:left;cursor:pointer;border-radius:8px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background='var(--s2)'" onmouseout="this.style.background='none'">👤 Ver perfil</button>
     ${!currentUser.isGuest ? `
-    <label for="fotoInputGlobal" onclick="document.getElementById('userFloatMenu')?.remove();_fotoUploadTarget='${currentUser.id}'" style="width:100%;display:flex;align-items:center;gap:8px;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 10px;text-align:left;cursor:pointer;border-radius:8px;box-sizing:border-box">📷 Alterar foto</label>
+    <label for="fotoInputGlobal" onclick="document.getElementById('userFloatMenu')?.remove();window._fotoUploadTarget='${currentUser.id}'" style="width:100%;display:flex;align-items:center;gap:8px;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 10px;text-align:left;cursor:pointer;border-radius:8px;box-sizing:border-box">📷 Alterar foto</label>
     <button onclick="document.getElementById('userFloatMenu')?.remove();abrirMudarSenha()" style="width:100%;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 10px;text-align:left;cursor:pointer;border-radius:8px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background='var(--s2)'" onmouseout="this.style.background='none'">🔑 Mudar senha</button>` : ''}
     <div style="border-top:1px solid var(--border);margin:6px 0"></div>
     <button onclick="document.getElementById('userFloatMenu')?.remove();sairDaConta()" style="width:100%;background:none;border:none;color:var(--red);font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 10px;text-align:left;cursor:pointer;border-radius:8px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background='rgba(255,68,68,.08)'" onmouseout="this.style.background='none'">🚪 Sair da conta</button>
@@ -2653,6 +2848,59 @@ function resizeImage(base64, maxSize) {
 }
 
 // ─── OPCOES ──────────────────────────────────────────────────
+function renderRegras() {
+  const v = getValores();
+  const end = appData.presenca?.local || 'R. Juscelino Barbosa 254';
+  const pix = 'mfnassif16@gmail.com';
+  // Horário a partir da lista de presença ou padrão
+  const horaIni = appData.presenca?.horario?.split(' às ')?.[0] || '11:30';
+  const horaFim3 = appData.presenca?.horario?.split(' às ')?.[1] || '13:00';
+  const n = getTamanhoTime(appData.presenca?.confirmados||[]);
+  const horaFim4 = (() => {
+    // Calcula fim com 4 times = +30min
+    const [h, m] = horaFim3.split(':').map(Number);
+    const total = h*60 + m + 30;
+    return `${String(Math.floor(total/60)).padStart(2,'0')}:${String(total%60).padStart(2,'0')}`;
+  })();
+  const body = document.getElementById('modalRegrasBody');
+  if (!body) return;
+  body.innerHTML = `
+    <div style="font-size:13px;color:var(--text);line-height:1.9">
+      <div style="margin-bottom:14px">
+        <div style="font-family:'Oswald',sans-serif;font-size:12px;letter-spacing:2px;color:var(--gold);margin-bottom:6px">MENSALISTAS</div>
+        <div>• Pagamento: <strong>R$${v.mensal.toFixed(0)}/mês</strong> até o 5º dia útil</div>
+        <div>• Atraso: multa de <strong>R$${v.multaSem.toFixed(0)}/semana</strong></div>
+        <div>• Prioridade na lista até <strong>48h antes</strong> da pelada</div>
+        <div>• Todas as peladas do mês incluídas</div>
+      </div>
+      <div style="margin-bottom:14px">
+        <div style="font-family:'Oswald',sans-serif;font-size:12px;letter-spacing:2px;color:var(--gold);margin-bottom:6px">AVULSOS</div>
+        <div>• Pagamento: <strong>R$${v.avulso.toFixed(0)}/pelada</strong></div>
+        <div>• Pagar até <strong>24h antes</strong> ou perde a vaga</div>
+        <div>• Pode confirmar após a janela de 48h dos mensalistas</div>
+      </div>
+      <div style="margin-bottom:14px">
+        <div style="font-family:'Oswald',sans-serif;font-size:12px;letter-spacing:2px;color:var(--gold);margin-bottom:6px">PARTIDAS</div>
+        <div>• 1ª partida: <strong>10 min, sem limite de gol</strong> (2 primeiros times completos a chegar)</div>
+        <div>• Demais: <strong>7 min</strong> ou <strong>2 gols</strong></div>
+        <div>• Times de <strong>${n}</strong> jogadores</div>
+      </div>
+      <div>
+        <div style="font-family:'Oswald',sans-serif;font-size:12px;letter-spacing:2px;color:#ef4444;margin-bottom:6px">FALTAS E MULTAS</div>
+        <div>• Desmarcar &lt;24h ou não ir:</div>
+        <div style="padding-left:12px">Mensalista: <strong>R$${v.multa.toFixed(0)}</strong></div>
+        <div style="padding-left:12px">Avulso: <strong>R$${v.avulso.toFixed(0)}</strong></div>
+        <div>• Inadimplentes não confirmam presença</div>
+      </div>
+    </div>
+    <div style="background:var(--s2);border-radius:8px;padding:10px 12px;margin-top:14px;font-size:12px;color:var(--t2)">
+      📍 ${end}<br>
+      ⏰ ${horaIni} às ${horaFim3} (3 times) · até ${horaFim4} (4 times)<br>
+      💳 Pix: ${pix}
+    </div>`;
+}
+window.renderRegras = renderRegras;
+
 function renderOpcoes() {
   const v = appData.config?.aleatoriedade??15;
   const isAdmin = currentUser?.isAdmin;
@@ -2704,6 +2952,7 @@ function openModal(id) {
     renderRestModalList();
   }
   if(id==='modalAdmin') renderAdminList();
+  if(id==='modalRegras') renderRegras();
   document.getElementById(id).classList.add('open');
 }
 function closeModal(id){document.getElementById(id).classList.remove('open');}
@@ -2812,23 +3061,31 @@ async function confirmarDataSorteio() {
     .filter(id => appData.jogadores.find(x=>x.id===id)); // só cadastrados
   const n = confirmados.length;
 
+  const tipoPelada = appData.presenca?.tipoPelada || 'comum';
+  const tamanhoTime = getTamanhoTime(confirmados);
+  const tamanhosValidos = [tamanhoTime*2, tamanhoTime*3, tamanhoTime*4];
+
   appData.restricoes = appData.restricoes.filter(r=>r.duracao!=='domingo');
   flow = {
     step: 'sel',
-    presentes: [...confirmados], // pré-popula APENAS com confirmados cadastrados
+    presentes: [...confirmados],
     times:[], data,
     ausentes:[], statsIdx:0, statsOrder:[], statsData:{}, _saving:false,
-    semTimes: false
+    semTimes: false,
+    tipoPelada,
+    tamanhoTime,
   };
 
   document.getElementById('flow').style.display = 'block';
 
-  if (n === 10 || n === 15 || n === 20) {
-    // Número perfeito → sorteia direto sem tela de seleção
+  if (tipoPelada === 'classico') {
+    // Clássico: sorteia diretamente dividindo atleticanos vs cruzeirenses
+    saveLocal();
+    sortearTimesClassico();
+  } else if (tamanhosValidos.includes(n)) {
     saveLocal();
     sortearTimes();
   } else {
-    // Qualquer outro número → abre seleção manual pré-populada com confirmados
     flow.step = 'sel';
     saveLocal();
     renderFlow();
@@ -3047,17 +3304,45 @@ function confirmarPresentes(){
   flow.presentes = validos;
   sortearTimes();
 }
+function sortearTimesClassico() {
+  // Divide jogadores em Cruzeirenses (Azul) vs Atleticanos (Preto)
+  const atleticanos = flow.presentes.filter(id => {
+    const j = appData.jogadores.find(x=>x.id===id);
+    return j?.clube === 'atleticano';
+  });
+  const cruzeirenses = flow.presentes.filter(id => {
+    const j = appData.jogadores.find(x=>x.id===id);
+    return j?.clube === 'cruzeirense';
+  });
+  const semClube = flow.presentes.filter(id => {
+    const j = appData.jogadores.find(x=>x.id===id);
+    return !j?.clube;
+  });
+  // Distribui sem-clube para equilibrar
+  semClube.forEach(id => {
+    if (atleticanos.length <= cruzeirenses.length) atleticanos.push(id);
+    else cruzeirenses.push(id);
+  });
+  // Time Azul = Cruzeirenses, Time Preto = Atleticanos
+  flow.times = [cruzeirenses, atleticanos];
+  flow.step = 'times';
+  renderFlow();
+}
+window.sortearTimesClassico = sortearTimesClassico;
+
 function sortearTimes() {
-  const n=flow.presentes.length; const nT=n===10?2:n===15?3:4;
+  const n=flow.presentes.length;
+  const tSize = flow.tamanhoTime || getTamanhoTime(flow.presentes);
+  const nT = n <= tSize*2 ? 2 : n <= tSize*3 ? 3 : 4;
   const idxMap=Object.fromEntries(calcIdx(appData.jogadores).map(i=>[i.id,i]));
   const alea=(appData.config?.aleatoriedade??15)/100;
   const scores=flow.presentes.map(id=>idxMap[id]?.IF||0);
   const maxScore=Math.max(...scores);
-  const noiseBase = maxScore > 0 ? maxScore : 0.5; // guarantee noise when all scores=0
+  const noiseBase = maxScore > 0 ? maxScore : 0.5;
   const scored=flow.presentes.map(id=>{
     const base=idxMap[id]?.IF||0;
     const noise=noiseBase*alea*(Math.random()*2-1);
-    const minNoise=noiseBase*0.05*(Math.random()*2-1); // always some shuffle
+    const minNoise=noiseBase*0.05*(Math.random()*2-1);
     return{id,score:base+noise+minNoise};
   }).sort((a,b)=>b.score-a.score);
   const times=Array.from({length:nT},()=>[]);
@@ -3306,6 +3591,17 @@ async function salvarStats() {
 
   const peladaJogadores = [];
 
+  // ── Pré-calcula stats totais por time para fator de contribuição ─
+  const timesStats = {}; // timeIdx → {gols, assists, vitorias, n}
+  if (!flow.semTimes) {
+    flow.times.forEach((tm, ti) => {
+      const totG = tm.reduce((s,id)=>s+(flow.statsData[id]?.gols||0),0);
+      const totA = tm.reduce((s,id)=>s+(flow.statsData[id]?.assists||0),0);
+      const totV = tm.reduce((s,id)=>s+(flow.statsData[id]?.vitorias||0),0);
+      timesStats[ti] = { gols:totG, assists:totA, vitorias:totV, n: tm.length };
+    });
+  }
+
   for (const id of jogadoresNoJogo) {
     const j = appData.jogadores.find(x => x.id === id);
     if (!j) continue;
@@ -3317,7 +3613,11 @@ async function salvarStats() {
       peladaJogadores.push({ id, nome: j.nome, gols:0, assists:0, vitorias:0, scoreDia:0, ausente:true });
     } else {
       const stats = flow.statsData[id] || { gols: 0, assists: 0, vitorias: 0 };
-      j.domingos.push({ data, gols: stats.gols, assists: stats.assists, vitorias: stats.vitorias });
+      const ti = flow.times.findIndex(t=>t.includes(id));
+      const ts = (ti >= 0 && timesStats[ti]) ? timesStats[ti] : null;
+      const domingoRec = { data, gols: stats.gols, assists: stats.assists, vitorias: stats.vitorias };
+      if (ts) { domingoRec.teamStats = { gols: ts.gols, assists: ts.assists }; domingoRec.teamN = ts.n; }
+      j.domingos.push(domingoRec);
       const scoreDia = +(stats.gols + stats.assists + W_VIT * stats.vitorias).toFixed(4);
       peladaJogadores.push({ id, nome: j.nome, gols:stats.gols, assists:stats.assists, vitorias:stats.vitorias, scoreDia, ausente:false });
     }
@@ -3372,6 +3672,7 @@ async function salvarStats() {
     times: flow.semTimes ? {} : timesObjRec,
     jogadores: peladaJogadores,
     mvp: null,
+    bolaMurcha: null,
     podio: null,
     votacao: nominees.length > 0 ? {
       status: 'aberta',
@@ -3379,7 +3680,15 @@ async function salvarStats() {
       votos: {},
       elegiveisVotar,
       elapsesAt,
-    } : null
+    } : null,
+    // Bola Murcha: todos elegíveis votam em qualquer jogador que jogou (exceto si mesmo)
+    votacaoBolaMurcha: presentes.length > 0 ? {
+      status: 'aberta',
+      candidatos: presentes.map(p => ({ id: p.id, nome: p.nome })),
+      votos: {},           // { votanteId: votadoId }
+      elegiveisVotar,      // mesmos que o MVP
+      elapsesAt,           // expira junto
+    } : null,
   };
 
   await firestoreSet('peladasHist', peladaId, peladaRec);
@@ -3410,6 +3719,28 @@ async function salvarStats() {
 
 
 // ─── VOTAÇÃO MVP ─────────────────────────────────────────────
+async function votarBolaMurcha(peladaId, candidatoId) {
+  if (!currentUser || currentUser.isGuest) { showToast('Você precisa estar logado para votar'); return; }
+  const p = (appData.peladasHist||[]).find(x=>x.id===peladaId);
+  if (!p || !p.votacaoBolaMurcha || p.votacaoBolaMurcha.status !== 'aberta') {
+    showToast('Votação não está aberta'); return;
+  }
+  if (!p.votacaoBolaMurcha.elegiveisVotar.includes(currentUser.id)) {
+    showToast('Só quem jogou pode votar'); return;
+  }
+  if (p.votacaoBolaMurcha.votos[currentUser.id]) { showToast('Você já votou!'); return; }
+  p.votacaoBolaMurcha.votos[currentUser.id] = candidatoId;
+  await firestoreSet('peladasHist', peladaId, p);
+  const totalVotos = Object.keys(p.votacaoBolaMurcha.votos).length;
+  const totalEleg = p.votacaoBolaMurcha.elegiveisVotar.length;
+  showToast(`🎈 Voto Bola Murcha registrado! (${totalVotos}/${totalEleg})`);
+  renderPeladasHistorico();
+  if (document.getElementById('modalPeladaDetalhe').classList.contains('open')) {
+    openPeladaDetalhe(peladaId);
+  }
+}
+window.votarBolaMurcha = votarBolaMurcha;
+
 async function votarMvp(peladaId, nomineeId) {
   if (!currentUser || currentUser.isGuest) { showToast('Você precisa estar logado para votar'); return; }
   const p = (appData.peladasHist||[]).find(x=>x.id===peladaId);
@@ -3440,12 +3771,11 @@ async function votarMvp(peladaId, nomineeId) {
 
 async function finalizarVotacao(peladaId, p, semNominees) {
   if (!semNominees && p.votacao) {
-    // Count votes
+    // Count MVP votes
     const contagem = {};
     for (const v of Object.values(p.votacao.votos)) {
       contagem[v] = (contagem[v]||0) + 1;
     }
-    // Find nominee with most votes; tie-break by scoreDia
     const vencedor = p.votacao.nominees.sort((a,b) => {
       const va = contagem[a.id]||0, vb = contagem[b.id]||0;
       if (vb !== va) return vb - va;
@@ -3453,6 +3783,25 @@ async function finalizarVotacao(peladaId, p, semNominees) {
     })[0];
     p.mvp = vencedor || null;
     p.votacao.status = 'encerrada';
+  }
+
+  // Finaliza Bola Murcha — conta votos de todos (sem restrição de nominee)
+  if (p.votacaoBolaMurcha && p.votacaoBolaMurcha.status === 'aberta') {
+    const bm = p.votacaoBolaMurcha;
+    const contagemBm = {};
+    for (const v of Object.values(bm.votos)) {
+      contagemBm[v] = (contagemBm[v]||0) + 1;
+    }
+    let maxVotos = 0;
+    let vencedorBm = null;
+    for (const [id, qtd] of Object.entries(contagemBm)) {
+      if (qtd > maxVotos) { maxVotos = qtd; vencedorBm = id; }
+    }
+    if (vencedorBm) {
+      const jBmNom = appData.jogadores.find(x=>x.id===vencedorBm);
+      p.bolaMurcha = { id: vencedorBm, nome: jBmNom?.nome || vencedorBm, votos: maxVotos };
+    }
+    bm.status = 'encerrada';
   }
 
   // Build podium: top-3 by scoreDia among presentes (independent of vote)
@@ -3470,7 +3819,7 @@ async function finalizarVotacao(peladaId, p, semNominees) {
     terceiro:  presentes[2] || null,
   };
 
-  // Award MVP (1st place in vote) on player record
+  // Award MVP counter
   if (p.mvp) {
     const jMvp = appData.jogadores.find(x => x.id === p.mvp.id);
     if (jMvp) {
@@ -3478,6 +3827,15 @@ async function finalizarVotacao(peladaId, p, semNominees) {
       const lastDom = jMvp.domingos[jMvp.domingos.length - 1];
       if (lastDom) lastDom.mvp = true;
       await firestoreSet('jogadores', jMvp.id, jMvp);
+    }
+  }
+
+  // Award Bola Murcha counter
+  if (p.bolaMurcha) {
+    const jBm = appData.jogadores.find(x => x.id === p.bolaMurcha.id);
+    if (jBm) {
+      jBm.bolaMurchas = (jBm.bolaMurchas || 0) + 1;
+      await firestoreSet('jogadores', jBm.id, jBm);
     }
   }
 
@@ -3620,7 +3978,68 @@ function renderFinancas() {
   // Render inside the screen
   const inner = cont.querySelector('#financasInner');
   if (!inner) return;
+
+  // ── CAIXA ADMIN PANEL ─────────────────────────────────────
+  let caixaHTML = '';
+  if (isAdmin) {
+    const caixaMes = getMesReferencia();
+    const caixaKey = '_caixa_' + caixaMes;
+    const caixaData = appData.financas[caixaKey] || { gastos: [] };
+    // Recebido = pagamentos cujo descricao ou data contém o mês de referência
+    const recebidoTotal = appData.jogadores.reduce((sum, j) => {
+      const fin = getFinancasJogador(j.id);
+      return sum + (fin.pagamentos||[]).filter(p =>
+        (p.descricao||'').toLowerCase().includes(caixaMes.toLowerCase()) ||
+        (p.data||'').includes(new Date().getFullYear().toString())
+          && (p.data||'').includes(String(new Date().getMonth()+1).padStart(2,'0'))
+      ).reduce((s,p) => s+(p.valor||0), 0);
+    }, 0);
+    // Pendente = todos débitos em aberto
+    const pendente = appData.jogadores.reduce((sum, j) => {
+      return sum + Math.max(0, totalDebitoJogador(j.id));
+    }, 0);
+    // Gastos do mês
+    const gastos = (caixaData.gastos||[]);
+    const totalGasto = gastos.reduce((s,g) => s+(g.valor||0), 0);
+    const saldo = recebidoTotal - totalGasto;
+
+    caixaHTML = `
+      <div class="card" style="border-color:var(--border-gold);margin-bottom:14px">
+        <div class="section-lbl" style="margin-bottom:10px">💰 CAIXA — ${caixaMes}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px">
+          <div style="background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.25);border-radius:10px;padding:12px 8px;text-align:center">
+            <div style="font-size:9px;letter-spacing:1px;color:#22c55e;text-transform:uppercase;margin-bottom:4px">Recebido</div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:700;color:#22c55e">R$${recebidoTotal.toFixed(0)}</div>
+          </div>
+          <div style="background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.25);border-radius:10px;padding:12px 8px;text-align:center">
+            <div style="font-size:9px;letter-spacing:1px;color:#eab308;text-transform:uppercase;margin-bottom:4px">Pendente</div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:700;color:#eab308">R$${pendente.toFixed(0)}</div>
+          </div>
+          <div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:10px;padding:12px 8px;text-align:center">
+            <div style="font-size:9px;letter-spacing:1px;color:#ef4444;text-transform:uppercase;margin-bottom:4px">Gasto</div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:700;color:#ef4444">R$${totalGasto.toFixed(0)}</div>
+          </div>
+        </div>
+        <div style="background:${saldo>=0?'rgba(34,197,94,.06)':'rgba(239,68,68,.06)'};border:1px solid ${saldo>=0?'rgba(34,197,94,.15)':'rgba(239,68,68,.15)'};border-radius:8px;padding:8px 12px;text-align:center;margin-bottom:12px">
+          <span style="font-size:11px;color:var(--t2)">Saldo do mês </span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:15px;font-weight:700;color:${saldo>=0?'#22c55e':'#ef4444'}">R$${saldo.toFixed(0)}</span>
+        </div>
+        <div class="section-lbl" style="margin-bottom:8px">GASTOS DO MÊS</div>
+        ${gastos.length > 0 ? gastos.map((g,i)=>`
+          <div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border)">
+            <div style="flex:1">
+              <div style="font-size:13px">${g.descricao}</div>
+              <div style="font-size:10px;color:var(--t2)">${g.data||''}</div>
+            </div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:13px;color:#ef4444">R$${(+g.valor).toFixed(2)}</div>
+            <button onclick="removerGastoCaixa('${caixaMes}',${i})" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:18px;padding:0 4px">×</button>
+          </div>`).join('') : '<div style="font-size:12px;color:var(--t3);margin-bottom:8px">Nenhum gasto registrado</div>'}
+        <button class="btn btn-ghost" style="margin-top:8px;font-size:12px" onclick="abrirAddGasto('${caixaMes}')">+ REGISTRAR GASTO</button>
+      </div>`;
+  }
+
   inner.innerHTML = `
+    ${caixaHTML}
     ${isAdmin ? valoresAtualCfg : ''}
     ${aviso5du}
     ${inadimplentes.length > 0 ? `
@@ -3631,6 +4050,59 @@ function renderFinancas() {
       ${emDia.map(renderRow).join('')}` : ''}
   `;
 }
+
+function abrirAddGasto(mes) {
+  if (!currentUser?.isAdmin) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay open';
+  overlay.id = 'modalAddGasto';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="mhandle"></div>
+      <div class="m-title">REGISTRAR GASTO</div>
+      <div class="m-sub">${mes}</div>
+      <div class="field"><label>Descrição</label><input class="input" id="gastoDesc" placeholder="Ex: Compra de bolas" maxlength="60"></div>
+      <div class="field"><label>Valor (R$)</label><input class="input" id="gastoValor" type="number" min="0" step="0.01" placeholder="0.00"></div>
+      <button class="btn btn-gold" onclick="salvarGasto('${mes}')">SALVAR</button>
+      <button class="btn btn-ghost mt8" onclick="document.getElementById('modalAddGasto').remove()">CANCELAR</button>
+    </div>`;
+  overlay.addEventListener('click', e => { if(e.target===overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+  setTimeout(()=>document.getElementById('gastoDesc')?.focus(), 100);
+}
+window.abrirAddGasto = abrirAddGasto;
+
+async function salvarGasto(mes) {
+  const desc  = document.getElementById('gastoDesc')?.value.trim();
+  const valor = parseFloat(document.getElementById('gastoValor')?.value);
+  if (!desc) { showToast('Informe a descrição'); return; }
+  if (isNaN(valor) || valor <= 0) { showToast('Valor inválido'); return; }
+  const key = '_caixa_' + mes;
+  const caixaData = appData.financas[key] || { gastos: [] };
+  caixaData.gastos = caixaData.gastos || [];
+  caixaData.gastos.push({ descricao: desc, valor, data: new Date().toLocaleDateString('pt-BR') });
+  appData.financas[key] = caixaData;
+  await firestoreSet('financas', key, caixaData);
+  saveLocal();
+  document.getElementById('modalAddGasto')?.remove();
+  renderFinancas();
+  showToast('Gasto registrado ✅');
+}
+window.salvarGasto = salvarGasto;
+
+async function removerGastoCaixa(mes, idx) {
+  if (!currentUser?.isAdmin) return;
+  if (!confirm('Remover este gasto?')) return;
+  const key = '_caixa_' + mes;
+  const caixaData = appData.financas[key] || { gastos: [] };
+  caixaData.gastos = (caixaData.gastos||[]).filter((_,i)=>i!==idx);
+  appData.financas[key] = caixaData;
+  await firestoreSet('financas', key, caixaData);
+  saveLocal();
+  renderFinancas();
+  showToast('Gasto removido');
+}
+window.removerGastoCaixa = removerGastoCaixa;
 
 function abrirDarBaixa(jogadorId) {
   if (!currentUser?.isAdmin) { showToast('Sem permissão'); return; }
@@ -3917,6 +4389,7 @@ async function salvarValores() {
     showToast('Valores inválidos'); return;
   }
   if (!appData.config) appData.config = {};
+  const old = getValores();
   appData.config.valorMensal   = mensal;
   appData.config.valorAvulso   = avulso;
   appData.config.valorMulta    = multa;
@@ -3924,10 +4397,36 @@ async function salvarValores() {
   await firestoreSet('config', 'main', appData.config);
   saveLocal();
   document.getElementById('modalConfigValores')?.remove();
+  // Ask about recalculating existing open debts
+  const mudouMensal = mensal !== old.mensal;
+  const mudouAvulso = avulso !== old.avulso;
+  const mudouMulta  = multa  !== old.multa;
+  if ((mudouMensal || mudouAvulso || mudouMulta) && confirm(
+    'Recalcular débitos pendentes com os novos valores?\n\n' +
+    (mudouMensal ? `Mensalidade: R$${old.mensal} → R$${mensal}\n` : '') +
+    (mudouAvulso ? `Avulso: R$${old.avulso} → R$${avulso}\n` : '') +
+    (mudouMulta  ? `Multa: R$${old.multa} → R$${multa}\n` : '') +
+    '\nOK = atualiza todos em aberto | Cancelar = mantém valores antigos'
+  )) {
+    for (const j of appData.jogadores) {
+      const fin = getFinancasJogador(j.id);
+      if (!fin.debitos) continue;
+      let changed = false;
+      fin.debitos.forEach(d => {
+        if (d.quitado) return;
+        if (mudouMensal && d.tipo === 'mensal') { d.valor = mensal; changed = true; }
+        if (mudouAvulso && d.tipo === 'avulso') { d.valor = avulso; changed = true; }
+        if (mudouMulta  && d.tipo === 'multa')  { d.valor = multa;  changed = true; }
+      });
+      if (changed) { await firestoreSet('financas', j.id, fin); appData.financas[j.id] = fin; }
+    }
+    saveLocal();
+    showToast('Valores e débitos atualizados ✅');
+  } else {
+    showToast(`Valores salvos ✅ — Mensal R$${mensal} · Avulso R$${avulso} · Multa R$${multa}`);
+  }
   renderFinancas();
-  showToast(`Valores salvos ✅ — Mensal R$${mensal} · Avulso R$${avulso} · Multa R$${multa}`);
 }
-window.salvarValores = salvarValores;
 
 async function gerarMensalidadesMes() {
   if (!currentUser?.isAdmin) return;
@@ -4116,3 +4615,12 @@ window.moverJogador=moverJogador;
 window.salvarEdicaoTimes=salvarEdicaoTimes;
 window.abrirMudarSenha=abrirMudarSenha;
 window.salvarNovaSenha=salvarNovaSenha;
+window.abrirUploadFoto=abrirUploadFoto;
+window.salvarValores=salvarValores;
+window.salvarEditDomingo=salvarEditDomingo;
+window.setJogFiltro=setJogFiltro;
+// Expõe _fotoUploadTarget ao escopo global para labels inline em ES modules
+Object.defineProperty(window, '_fotoUploadTarget', {
+  get() { return _fotoUploadTarget; },
+  set(v) { _fotoUploadTarget = v; }
+});
