@@ -426,17 +426,24 @@ function normGroup(vals) {
   if(mx===mn) return vals.map(()=>0.5);
   return vals.map(v=>+((v-mn)/(mx-mn)).toFixed(4));
 }
+function scaleToMax10(vals) {
+  // Scale so max=10, proportional (no floor at 0)
+  const mx = Math.max(...vals);
+  if (mx === 0) return vals.map(() => 0);
+  return vals.map(v => +(v / mx * 10).toFixed(4));
+}
+
 function calcIdx(jogs) {
   if(!jogs.length) return [];
   const med=medioGrupo(jogs);
   const adjs=jogs.map(j=>scoreAdj(j,med));
   const notas=jogs.map(j=>+(j.nota||5).toFixed(1));
-  // Ambas as entradas normalizadas relativamente ao grupo (0–1) para blend consistente
-  const adjN  = normGroup(adjs);   // score estatístico normalizado
-  const notaN = normGroup(notas);  // nota opinativa normalizada (mesmo referencial)
+  // Scale so max=10, rest proportional — no player gets forced to 0
+  const adjN  = scaleToMax10(adjs);   // 0–10, proportional to best stats
+  const notaN = scaleToMax10(notas);  // 0–10, proportional to best nota (mesmo referencial)
   return jogs.map((j,i)=>{
     const n=nDomAtivo(j),a=alpha(n);
-    const IF=+((a*notaN[i]+(1-a)*adjN[i])*10).toFixed(4); // resultado final 0–10
+    const IF=+(a*notaN[i]+(1-a)*adjN[i]).toFixed(4); // 0–10 (both inputs already 0–10)
     return {id:j.id,nome:j.nome,nota:notas[i],notaN:notaN[i],sAdj:adjs[i],sAdjN:adjN[i],alpha:a,IF,n,nTotal:nDom(j)};
   });
 }
@@ -886,7 +893,7 @@ async function removerComunicado(id) {
 // ─── PRESENÇA ─────────────────────────────────────────────────
 function getDescricaoPelada(horario) {
   const domingo = getProximoDomingo();
-  return `App do Torneira — ${domingo}
+  return `App do Torneiro — ${domingo}
 R. Juscelino Barbosa 254
 ${horario || '11:30 às 13:00'}
 Pix: mfnassif16@gmail.com`;
@@ -980,10 +987,20 @@ function renderPresenca() {
   const esperaCheia = espera.length >= esperaMax;
 
   // Nomes ordenados alfabeticamente
+  const tipoPresenca = presenca.tipo || 'normal'; // 'classico' or 'normal'
   const confirmadosNomes = confirmados.map(id => {
     const j = appData.jogadores.find(x => x.id === id);
-    return { id, nome: j?.nome || id, mensalista: jogadorMensalista(id) };
-  }).sort((a,b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+    return { id, nome: j?.nome || id, mensalista: jogadorMensalista(id), clube: j?.clube || '' };
+  }).sort((a,b) => {
+    if (tipoPresenca === 'classico') {
+      // Atleticanos first, then cruzeirenses, then others
+      const clubeOrder = { 'atleticano': 0, 'cruzeirense': 1 };
+      const oa = clubeOrder[a.clube] ?? 2;
+      const ob = clubeOrder[b.clube] ?? 2;
+      if (oa !== ob) return oa - ob;
+    }
+    return a.nome.localeCompare(b.nome, 'pt-BR');
+  });
 
   const esperaNomes = espera.map((id,i) => {
     const j = appData.jogadores.find(x => x.id === id);
@@ -993,6 +1010,7 @@ function renderPresenca() {
   const localAtual = presenca.local || 'R. Juscelino Barbosa 254';
   const horarioAtual = presenca.horario || horario;
   const dataExibir = dataLista || getProximoDomingo();
+  const nomePelada = tipoPresenca === 'classico' ? 'Clássico do Torneira' : 'Pelada do Torneira';
 
   // ── BOTÃO DO USUÁRIO ──────────────────────────────────────
   let btnHTML = '';
@@ -1022,14 +1040,18 @@ function renderPresenca() {
   // ── RENDER ────────────────────────────────────────────────
   cont.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-top:16px;margin-bottom:6px">
-      <div class="section-lbl" style="margin:0">LISTA DE PRESENÇA</div>
-      ${isAdminUser ? `<div style="display:flex;gap:6px">
-        ${!appData.presenca ? `<button onclick="abrirListaPresenca()" style="background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--t2);font-size:11px;padding:4px 12px;cursor:pointer;font-family:'DM Sans',sans-serif">+ Abrir lista</button>` : ''}
-        <button onclick="abrirAdminPresenca()" style="background:var(--gold-dim);border:1px solid var(--border-gold);border-radius:8px;color:var(--gold);font-size:11px;padding:4px 12px;cursor:pointer;font-family:'DM Sans',sans-serif">⚙️ Gerenciar</button>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div class="section-lbl" style="margin:0">LISTA DE PRESENÇA</div>
+        ${tipoPresenca==='classico'?'<span style="font-size:9px;background:rgba(201,168,76,.15);border:1px solid var(--border-gold);color:var(--gold);padding:2px 8px;border-radius:99px;font-family:Oswald,sans-serif;letter-spacing:1px">CLÁSSICO ⚽</span>':''}
+      </div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button onclick="exportarListaPresenca()" style="background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--t2);font-size:11px;padding:4px 10px;cursor:pointer;font-family:'DM Sans',sans-serif">📋 Exportar</button>
+        ${isAdminUser ? `<button onclick="abrirListaPresenca()" style="display:${!appData.presenca?'block':'none'};background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--t2);font-size:11px;padding:4px 10px;cursor:pointer">+ Abrir</button><button onclick="abrirAdminPresenca()" style="background:var(--gold-dim);border:1px solid var(--border-gold);border-radius:8px;color:var(--gold);font-size:11px;padding:4px 12px;cursor:pointer">⚙️ Gerenciar</button>` : ''}
+      </div>
       </div>` : ''}
     </div>
     <div class="card shield-card" style="margin-bottom:12px">
-      <div style="white-space:pre-line;font-size:13px;color:var(--text);line-height:1.7;margin-bottom:14px;font-weight:500">App do Torneira — ${dataExibir}
+      <div style="white-space:pre-line;font-size:13px;color:var(--text);line-height:1.7;margin-bottom:14px;font-weight:500">${nomePelada} ${dataExibir}
 ${localAtual}
 ${horarioAtual}
 Pix: mfnassif16@gmail.com</div>
@@ -1038,7 +1060,7 @@ Pix: mfnassif16@gmail.com</div>
         ${confirmadosNomes.map((p,i) => `
           <div style="font-size:13px;padding:3px 0;color:${p.id===userId?'var(--gold)':'var(--text)'};display:flex;align-items:center;gap:6px">
             <span style="color:var(--t2);min-width:18px">${i+1}.</span>
-            <span>${p.nome}${p.mensalista?'<span style="font-size:9px;color:var(--gold);margin-left:4px">M</span>':''}</span>
+            <span>${p.nome}${p.mensalista?'<span style="font-size:9px;color:var(--gold);margin-left:4px">M</span>':''}${tipoPresenca==='classico'&&p.clube?'<span style="font-size:9px;margin-left:4px;color:'+(p.clube==='atleticano'?'#888':'#3b82f6')+'">'+(p.clube==='atleticano'?'🐓':'🦊')+'</span>':''}</span>
             ${p.id===userId?'<span style="font-size:9px;color:var(--gold)">← você</span>':''}
           </div>`).join('')}
       </div>` : `<div style="font-size:12px;color:var(--t3);margin-bottom:10px">Nenhuma confirmação ainda</div>`}
@@ -1215,6 +1237,102 @@ async function abrirListaPresenca() {
   renderPresenca();
   showToast('Lista de presença aberta ✅');
 }
+function exportarListaPresenca() {
+  const presenca = appData.presenca || { confirmados:[], espera:[], data:'', tipo:'normal' };
+  const tipo = presenca.tipo || 'normal';
+  const data = presenca.data || getProximoDomingo();
+  const local = presenca.local || 'R. Juscelino Barbosa 254';
+  const total = (presenca.confirmados||[]).length;
+  const horario = presenca.horario || (total >= 20 ? '11:30 às 13:30' : '11:30 às 13:00');
+  const pix = 'Pix: mfnassif16@gmail.com';
+
+  const confirmados = presenca.confirmados || [];
+  const espera = presenca.espera || [];
+
+  let texto = '';
+
+  if (tipo === 'classico') {
+    // Split by clube
+    const atleticanos = confirmados
+      .map(id => appData.jogadores.find(x=>x.id===id))
+      .filter(j => j?.clube === 'atleticano')
+      .sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR'));
+
+    const cruzeirenses = confirmados
+      .map(id => appData.jogadores.find(x=>x.id===id))
+      .filter(j => j?.clube === 'cruzeirense')
+      .sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR'));
+
+    const semClube = confirmados
+      .map(id => appData.jogadores.find(x=>x.id===id))
+      .filter(j => j && !j.clube)
+      .sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR'));
+
+    texto = `Clássico do Torneira - ${data}
+${local}
+${horario}
+${pix}
+
+🐓 GALO:
+${atleticanos.map((j,i) => `  ${i+1}. ${j.nome}`).join('
+') || '  —'}
+
+🦊 CRUZEIRO:
+${cruzeirenses.map((j,i) => `  ${i+1}. ${j.nome}`).join('
+') || '  —'}${semClube.length > 0 ? '
+
+SEM CLUBE:
+' + semClube.map((j,i) => `  ${i+1}. ${j.nome}`).join('
+') : ''}`;
+
+  } else {
+    // Ordem alfabética
+    const nomes = confirmados
+      .map(id => appData.jogadores.find(x=>x.id===id)?.nome || id)
+      .sort((a,b) => a.localeCompare(b,'pt-BR'));
+
+    texto = `Pelada do Torneira - ${data}
+${local}
+${horario}
+${pix}
+
+${nomes.map((n,i) => `  ${i+1}. ${n}`).join('
+')}`;
+  }
+
+  // Add espera if any
+  if (espera.length > 0) {
+    const esperaNomes = espera
+      .map(id => appData.jogadores.find(x=>x.id===id)?.nome || id);
+    texto += `
+
+LISTA DE ESPERA:
+${esperaNomes.map((n,i) => `  ${i+1}. ${n}`).join('
+')}`;
+  }
+
+  // Copy to clipboard
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(texto).then(() => {
+      showToast('Lista copiada! ✅ Cole no WhatsApp');
+    }).catch(() => fallbackCopy(texto));
+  } else {
+    fallbackCopy(texto);
+  }
+}
+
+function fallbackCopy(texto) {
+  const ta = document.createElement('textarea');
+  ta.value = texto;
+  ta.style.cssText = 'position:fixed;opacity:0';
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand('copy');
+  document.body.removeChild(ta);
+  showToast('Lista copiada! ✅');
+}
+
+window.exportarListaPresenca = exportarListaPresenca;
 window.abrirListaPresenca = abrirListaPresenca;
 
 function abrirAdminPresenca() {
@@ -1268,6 +1386,11 @@ function abrirAdminPresenca() {
         🧤 Se 2+ goleiros confirmados, o sistema usa 1 jogador a menos por time automaticamente
       </div>
 
+      <div class="section-lbl" style="margin-bottom:8px">TIPO DE PELADA</div>
+      <div style="display:flex;gap:8px;margin-bottom:14px">
+        <button onclick="setTipoPresenca('normal')" style="flex:1;padding:8px;border-radius:8px;border:1px solid ${presenca.tipo==='classico'?'var(--border)':'var(--border-gold)'};background:${presenca.tipo==='classico'?'var(--s2)':'var(--gold-dim)'};color:${presenca.tipo==='classico'?'var(--t2)':'var(--gold)'};cursor:pointer;font-family:'Oswald',sans-serif;font-size:12px;letter-spacing:1px">NORMAL</button>
+        <button onclick="setTipoPresenca('classico')" style="flex:1;padding:8px;border-radius:8px;border:1px solid ${presenca.tipo==='classico'?'var(--border-gold)':'var(--border)'};background:${presenca.tipo==='classico'?'var(--gold-dim)':'var(--s2)'};color:${presenca.tipo==='classico'?'var(--gold)':'var(--t2)'};cursor:pointer;font-family:'Oswald',sans-serif;font-size:12px;letter-spacing:1px">⚽ CLÁSSICO</button>
+      </div>
       <div class="section-lbl" style="margin-bottom:8px">LOCAL E HORÁRIO</div>
       <div class="field"><label>Endereço</label>
         <input class="input" id="apLocal" value="R. Juscelino Barbosa 254" maxlength="60">
@@ -1441,6 +1564,21 @@ async function adminRemoverPresenca(lista, jogadorId) {
 }
 
 // Save custom local/horario to presença
+async function setTipoPresenca(tipo) {
+  if (!currentUser?.isAdmin) return;
+  if (!appData.presenca) {
+    appData.presenca = { confirmados:[], espera:[], data: appData.ultimoSorteio?.data || getProximoDomingo() };
+  }
+  appData.presenca.tipo = tipo;
+  await firestoreSet('config', 'presenca', appData.presenca);
+  saveLocal();
+  renderPresenca();
+  document.getElementById('modalAdminPresenca')?.remove();
+  abrirAdminPresenca();
+  showToast(tipo === 'classico' ? '⚽ Clássico ativado' : 'Pelada normal');
+}
+window.setTipoPresenca = setTipoPresenca;
+
 async function salvarInfoPelada() {
   const local = document.getElementById('apLocal')?.value?.trim();
   const ini = document.getElementById('apHoraIni')?.value?.trim();
@@ -1739,7 +1877,7 @@ function renderPeladasHistorico() {
           <div style="font-size:18px">${podeVotar ? '⭐' : '🏆'}</div>
           <div style="flex:1">
             <div style="font-family:'Oswald',sans-serif;font-size:14px;font-weight:700;letter-spacing:1px;color:var(--gold-lt)">
-              PELADA — APP DO TORNEIRA — ${data}
+              ${(histUnique.find(x=>x.data===data)?.tipo==='classico'?'CLÁSSICO':'PELADA')} DO TORNEIRA — ${data}
             </div>
             <div style="font-size:11px;color:var(--t2);margin-top:2px">
               ${jogNaData} jogadores${p ? ` · ${votAberta
@@ -1831,24 +1969,21 @@ function openPeladaDetalhe(peladaId) {
 
   let mvpHTML = '';
   if (v && v.nominees?.length > 0) {
-    const statusV = buildVoteStatus(v.votos, v.elegiveisVotar);
     if (v.status === 'encerrada' || p.mvp) {
       const cont = {}; for (const vt of Object.values(v.votos||{})) cont[vt]=(cont[vt]||0)+1;
       mvpHTML = `<div class="section-lbl">⭐ VOTAÇÃO MVP</div>` +
         v.nominees.map(n=>{
           const vc=cont[n.id]||0, win=p.mvp?.id===n.id;
-          const quem = statusV.filter(s=>v.votos[s.id]===n.id).map(s=>s.nome).join(', ');
           return `<div style="background:${win?'rgba(201,168,76,.1)':'var(--s2)'};border:1px solid ${win?'var(--border-gold)':'var(--border)'};border-radius:10px;padding:11px 14px;margin-bottom:8px;display:flex;align-items:center;gap:10px">
             <div style="font-size:20px">${win?'⭐':'👤'}</div>
             <div style="flex:1">
               <div style="font-weight:600;font-size:14px;color:${win?'var(--gold-lt)':'var(--text)'}">${n.nome}${win?' <span style="font-size:10px;color:var(--gold)">MVP</span>':''}</div>
               <div style="font-size:11px;color:var(--t2)">Score ${n.scoreDia.toFixed(2)} · ⚽${n.gols} 🎯${n.assists} 🏆${n.vitorias}</div>
-              ${quem?`<div style="font-size:10px;color:var(--t2)">Votos: ${quem}</div>`:''}
             </div>
             <div style="font-family:'JetBrains Mono',monospace;font-size:16px;color:${win?'var(--gold)':'var(--t2)'};">${vc}</div>
           </div>`;
         }).join('') +
-        `<div style="font-size:10px;color:var(--t2);margin-bottom:4px">${statusPills(statusV)}</div>`;
+``;
     } else if (v.status === 'aberta') {
       if (podeVotarFinal) {
         mvpHTML = `<div class="section-lbl">⭐ VOTE NO MVP</div><div style="font-size:12px;color:var(--t2);margin-bottom:10px">Quem foi o melhor?</div>` +
@@ -1862,7 +1997,7 @@ function openPeladaDetalhe(peladaId) {
               ${self?`<div style="font-size:11px;color:var(--t3)">Não pode votar em si</div>`:`<button class="btn btn-gold" style="width:auto;padding:8px 16px;font-size:13px" onclick="votarMvp('${p.id}','${n.id}')">VOTAR</button>`}
             </div>`;
           }).join('') +
-          `<div style="font-size:10px;color:var(--t2);margin-top:2px">${statusPills(statusV)}</div>`;
+          `<div style="font-size:10px;color:var(--t2);margin-top:2px"></div>`;
       } else if (jaVotou) {
         const nom = v.nominees.find(n=>n.id===meuVoto);
         mvpHTML = `<div class="section-lbl">⭐ VOTAÇÃO MVP</div>
@@ -1873,14 +2008,14 @@ function openPeladaDetalhe(peladaId) {
             <div style="font-size:11px;color:var(--t2)">Score ${n.scoreDia.toFixed(2)} · ⚽${n.gols} 🎯${n.assists} 🏆${n.vitorias}</div></div>
             ${meuVoto===n.id?'<div style="color:var(--gold);font-size:12px">✅ seu voto</div>':''}
           </div>`).join('') +
-          `<div style="font-size:10px;color:var(--t2);margin-top:2px">${statusPills(statusV)}</div>`;
+          `<div style="font-size:10px;color:var(--t2);margin-top:2px"></div>`;
       } else {
         mvpHTML = `<div class="section-lbl">⭐ VOTAÇÃO MVP</div><div style="font-size:12px;color:var(--t2);margin-bottom:8px">Candidatos:</div>` +
           v.nominees.map(n=>`<div style="background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:6px">
             <div style="font-weight:600;font-size:13px">${n.nome}</div>
             <div style="font-size:11px;color:var(--t2)">Score ${n.scoreDia.toFixed(2)} · ⚽${n.gols} 🎯${n.assists} 🏆${n.vitorias}</div>
           </div>`).join('') +
-          `<div style="font-size:10px;color:var(--t2);margin-top:2px">${statusPills(statusV)}</div>`;
+          `<div style="font-size:10px;color:var(--t2);margin-top:2px"></div>`;
       }
     }
   }
@@ -1889,22 +2024,19 @@ function openPeladaDetalhe(peladaId) {
   if (bm) {
     const candidatos = (p.jogadores||[]).filter(j=>!j.ausente);
     const contBm = {}; for (const v2 of Object.values(bm.votos||{})) contBm[v2]=(contBm[v2]||0)+1;
-    const statusBm = buildVoteStatus(bm.votos, bm.elegiveisVotar);
     if (bm.status==='encerrada' || p.bolaMurcha) {
       bmHTML = `<div class="section-lbl" style="margin-top:12px">🎈 BOLA MURCHA</div>` +
         candidatos.sort((a,b)=>(contBm[b.id]||0)-(contBm[a.id]||0)).map(n=>{
           const vc=contBm[n.id]||0, lose=p.bolaMurcha?.id===n.id;
-          const quem=statusBm.filter(s=>bm.votos[s.id]===n.id).map(s=>s.nome).join(', ');
           return `<div style="background:${lose?'rgba(239,68,68,.08)':'var(--s2)'};border:1px solid ${lose?'rgba(239,68,68,.3)':'var(--border)'};border-radius:10px;padding:10px 14px;margin-bottom:6px;display:flex;align-items:center;gap:8px">
             <div style="font-size:18px">${lose?'🎈':'👤'}</div>
             <div style="flex:1">
               <div style="font-weight:600;font-size:13px;color:${lose?'#ef4444':'var(--text)'}">${n.nome}${lose?' 🎈':''}</div>
-              ${quem?`<div style="font-size:10px;color:var(--t2)">Votos: ${quem}</div>`:''}
             </div>
             <div style="font-family:'JetBrains Mono',monospace;font-size:15px;color:${lose?'#ef4444':'var(--t2)'};">${vc}</div>
           </div>`;
         }).join('') +
-        `<div style="font-size:10px;color:var(--t2)">${statusPills(statusBm)}</div>`;
+        ``;
     } else if (bm.status==='aberta') {
       if (podeVotarBm) {
         bmHTML = `<div class="section-lbl" style="margin-top:12px">🎈 VOTE NA BOLA MURCHA</div>
@@ -1913,17 +2045,17 @@ function openPeladaDetalhe(peladaId) {
             <div style="flex:1"><div style="font-size:13px;font-weight:500">${n.nome}</div></div>
             <button onclick="votarBolaMurcha('${p.id}','${n.id}')" style="background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.3);border-radius:8px;color:#ef4444;font-size:12px;padding:6px 12px;cursor:pointer;font-family:'Oswald',sans-serif;letter-spacing:1px">VOTAR</button>
           </div>`).join('') +
-          `<div style="font-size:10px;color:var(--t2);margin-top:2px">${statusPills(statusBm)}</div>`;
+          `<div style="font-size:10px;color:var(--t2);margin-top:2px"></div>`;
       } else if (jaVotouBm) {
         const nomBm = candidatos.find(c=>c.id===meuVotoBm)?.nome||meuVotoBm;
         bmHTML = `<div class="section-lbl" style="margin-top:12px">🎈 BOLA MURCHA</div>
           <div style="background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px;font-size:13px;color:var(--t2)">
             ✅ Você votou em <strong style="color:#ef4444">${nomBm}</strong></div>
-          <div style="font-size:10px;color:var(--t2)">${statusPills(statusBm)}</div>`;
+          <div style="font-size:10px;color:var(--t2)"></div>`;
       } else {
         bmHTML = `<div class="section-lbl" style="margin-top:12px">🎈 BOLA MURCHA</div>
           <div style="font-size:12px;color:var(--t2);margin-bottom:6px">Votação em andamento.</div>
-          <div style="font-size:10px;color:var(--t2)">${statusPills(statusBm)}</div>`;
+          <div style="font-size:10px;color:var(--t2)"></div>`;
       }
     }
   }
@@ -3717,8 +3849,10 @@ async function salvarStats() {
   const timesObjRec = {};
   flow.times.forEach((t, i) => { timesObjRec['t' + i] = t; });
 
+  const tipoPelada = appData.presenca?.tipo || appData.presenca?.tipoPelada || 'normal';
   const peladaRec = {
     id: peladaId,
+    tipo: tipoPelada,
     data,
     savedAt: Date.now(),
     times: flow.semTimes ? {} : timesObjRec,
@@ -3838,7 +3972,6 @@ async function recalcularScoresDias() {
   showToast(`✅ ${updated} pelada${updated!==1?'s':''} recalculada${updated!==1?'s':''}!`);
   renderPeladasHistorico();
 }
-window.recalcularScoresDias = recalcularScoresDias;
 
 async function votarBolaMurcha(peladaId, candidatoId) {
   if (!currentUser || currentUser.isGuest) { showToast('Você precisa estar logado para votar'); return; }
