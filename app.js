@@ -913,7 +913,7 @@ function getRegrasPelada() {
   const v = getValores();
   return `• 1ª partida: 10 min, sem limite de gol (2 primeiros times completos)
 • Demais partidas: 7 min ou 2 gols
-• Mensalista: R$${v.mensal.toFixed(0)}/mês, prioridade até Sex 12h
+• Mensalista: R$${v.mensal.toFixed(0)}/mês, prioridade garantida (desloca avulso se lista cheia)
 • Avulso: R$${v.avulso.toFixed(0)}/pelada, pagar até Sáb 12h
 • Falta sem aviso <24h: mensalista R$${v.multa.toFixed(0)} / avulso R$${v.avulso.toFixed(0)}
 • Mensalidade em atraso: multa R$${v.multaSem.toFixed(0)}/semana após 5º dia útil`;
@@ -979,10 +979,7 @@ function renderPresenca() {
   const now = Date.now();
   const peladaDate = parsePeladaDate(dataLista);
   const h24 = 24 * 60 * 60 * 1000;
-  const h48 = 48 * 60 * 60 * 1000;
   const dentro24h = peladaDate && (peladaDate - now) < h24;
-  // Janela de prioridade: mensalistas têm prioridade até 48h antes
-  const dentroPrioridade = peladaDate ? now < (peladaDate - h48) : true;
 
   const userId = currentUser?.id;
   const isGuest = currentUser?.isGuest;
@@ -1035,8 +1032,24 @@ function renderPresenca() {
     btnHTML = `<button class="btn btn-danger" onclick="desmarcarPresenca()">❌ DESMARCAR${multaLabel}</button>`;
   } else if (naEspera) {
     btnHTML = `<button class="btn btn-ghost" onclick="desmarcarPresenca()">SAIR DA LISTA DE ESPERA</button>`;
-  } else if (dentroPrioridade && !ehMensalista) {
-    btnHTML = `<button class="btn btn-ghost" disabled style="opacity:0.6">⏳ RESERVADO MENSALISTAS (até 48h antes)</button>`;
+  } else if (tipoPresenca === 'classico') {
+    // No clássico: mostra estado do clube do usuário
+    const jogadorAtual = appData.jogadores.find(x => x.id === userId);
+    const clubeAtual = jogadorAtual?.clube;
+    if (!clubeAtual || (clubeAtual !== 'atleticano' && clubeAtual !== 'cruzeirense')) {
+      btnHTML = `<button class="btn btn-ghost" disabled style="opacity:0.5">⚽ Defina seu clube para participar do Clássico</button>`;
+    } else {
+      const { vagasClube, cheio: clubeCheio } = getVagasLimiteClube(confirmados, espera, clubeAtual);
+      const { metadeEspera, cheio: esperaClubeCheia } = getEsperaLimiteClube(confirmados, espera, clubeAtual);
+      const labelClube = clubeAtual === 'atleticano' ? '🐓 Galo' : '🦊 Cruzeiro';
+      if (clubeCheio && esperaClubeCheia) {
+        btnHTML = `<button class="btn btn-ghost" disabled style="opacity:0.5">LISTA ${labelClube.toUpperCase()} COMPLETA</button>`;
+      } else if (clubeCheio) {
+        btnHTML = `<button class="btn btn-gold" onclick="confirmarPresenca()">📋 ESPERA ${labelClube}</button>`;
+      } else {
+        btnHTML = `<button class="btn btn-gold" onclick="confirmarPresenca()">✅ CONFIRMAR — ${labelClube}</button>`;
+      }
+    }
   } else if (listaCheia && esperaCheia) {
     btnHTML = `<button class="btn btn-ghost" disabled style="opacity:0.5">LISTA COMPLETA</button>`;
   } else if (listaCheia) {
@@ -1076,23 +1089,42 @@ Pix: mfnassif16@gmail.com</div>
         const galos = confirmadosNomes.filter(p => p.clube === 'atleticano');
         const raposas = confirmadosNomes.filter(p => p.clube === 'cruzeirense');
         const semClube = confirmadosNomes.filter(p => !p.clube || (p.clube !== 'atleticano' && p.clube !== 'cruzeirense'));
-        const secTitle = (label, n) => '<div style="font-size:10px;letter-spacing:1px;color:var(--t2);margin:8px 0 4px;font-family:Oswald,sans-serif">' + label + ' (' + n + ')</div>';
+        const metadeVagasDisp = Math.floor(vagas / 2);
+        const secTitle = (label, count, max) => '<div style="font-size:10px;letter-spacing:1px;color:var(--t2);margin:8px 0 4px;font-family:Oswald,sans-serif">' + label + ' (' + count + (max !== undefined ? '/' + max : '') + ')</div>';
         return '<div style="margin-bottom:10px">' +
-          (galos.length ? secTitle('🐓 GALO', galos.length) + galos.map(rowJog).join('') : '') +
-          (raposas.length ? secTitle('🦊 CRUZEIRO', raposas.length) + raposas.map(rowJog).join('') : '') +
+          (galos.length || true ? secTitle('🐓 GALO', galos.length, metadeVagasDisp) + (galos.length ? galos.map(rowJog).join('') : '<div style="font-size:12px;color:var(--t3);padding:2px 0">—</div>') : '') +
+          (raposas.length || true ? secTitle('🦊 CRUZEIRO', raposas.length, metadeVagasDisp) + (raposas.length ? raposas.map(rowJog).join('') : '<div style="font-size:12px;color:var(--t3);padding:2px 0">—</div>') : '') +
           (semClube.length ? secTitle('SEM CLUBE', semClube.length) + semClube.map(rowJog).join('') : '') +
           '</div>';
       })()}
       ${esperaNomes.length > 0 ? `
       <div style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px">
         <div style="font-size:10px;letter-spacing:1px;color:var(--t2);margin-bottom:6px">LISTA DE ESPERA</div>
-        ${esperaNomes.map(p => `
+        ${tipoPresenca === 'classico' ? (() => {
+          const metadeEsp = Math.floor(esperaMax / 2);
+          const galosEsp = esperaNomes.filter(p => appData.jogadores.find(x=>x.id===p.id)?.clube === 'atleticano');
+          const rapEsp = esperaNomes.filter(p => appData.jogadores.find(x=>x.id===p.id)?.clube === 'cruzeirense');
+          const secE = (label, lista, max) => lista.length > 0
+            ? `<div style="font-size:9px;letter-spacing:1px;color:var(--t3);margin:4px 0 2px;font-family:Oswald,sans-serif">${label} (${lista.length}/${max})</div>` +
+              lista.map((p,i) => `<div style="font-size:12px;padding:2px 0;color:${p.id===userId?'var(--gold)':'var(--t2)'}">${i+1}. ${p.nome}${p.id===userId?' ← você':''}</div>`).join('')
+            : '';
+          return secE('🐓 GALO', galosEsp, metadeEsp) + secE('🦊 CRUZEIRO', rapEsp, metadeEsp);
+        })() : esperaNomes.map(p => `
           <div style="font-size:12px;padding:2px 0;color:${p.id===userId?'var(--gold)':'var(--t2)'}">
             ${p.pos}. ${p.nome}${p.id===userId?' ← você':''}
           </div>`).join('')}
       </div>` : ''}
       <div style="font-size:10px;color:var(--t3);margin-top:10px;margin-bottom:12px">
-        ${total}/${vagas} confirmados · ${espera.length}/${esperaMax} espera
+        ${tipoPresenca === 'classico' ? (() => {
+          const galosConf = confirmadosNomes.filter(p => p.clube === 'atleticano').length;
+          const rapConf = confirmadosNomes.filter(p => p.clube === 'cruzeirense').length;
+          const galosEsp = espera.filter(id => appData.jogadores.find(x=>x.id===id)?.clube === 'atleticano').length;
+          const rapEsp = espera.filter(id => appData.jogadores.find(x=>x.id===id)?.clube === 'cruzeirense').length;
+          const metadeVagas = Math.floor(vagas / 2);
+          const metadeEspera = Math.floor(esperaMax / 2);
+          return `🐓 ${galosConf}/${metadeVagas} conf · 🦊 ${rapConf}/${metadeVagas} conf` +
+            (galosEsp + rapEsp > 0 ? ` · espera: 🐓${galosEsp}/${metadeEspera} 🦊${rapEsp}/${metadeEspera}` : '');
+        })() : `${total}/${vagas} confirmados · ${espera.length}/${esperaMax} espera`}
         ${total >= n*3 ? ` · <span style="color:var(--gold)">✓ ${nTimes} times / ${nTimes>=4?'2h':'1h30'}</span>` : ''}
       </div>
       ${btnHTML}
@@ -1650,6 +1682,29 @@ function getVagasLimite(confirmados, espera) {
   return n*3;
 }
 
+function getVagasLimiteClube(confirmados, espera, clube) {
+  // No clássico: cada clube tem direito a metade das vagas totais
+  const total = getVagasLimite(confirmados, espera);
+  const metade = Math.floor(total / 2);
+  // Conta confirmados do clube
+  const confClube = (confirmados||[]).filter(id => {
+    const j = appData.jogadores.find(x => x.id === id);
+    return j?.clube === clube;
+  }).length;
+  return { vagasClube: metade, confClube, cheio: confClube >= metade };
+}
+
+function getEsperaLimiteClube(confirmados, espera, clube) {
+  // No clássico: cada clube tem direito a metade das vagas de espera
+  const totalEspera = getEsperaLimite(confirmados);
+  const metadeEspera = Math.floor(totalEspera / 2);
+  const esperaClube = (espera||[]).filter(id => {
+    const j = appData.jogadores.find(x => x.id === id);
+    return j?.clube === clube;
+  }).length;
+  return { esperaClube, metadeEspera, cheio: esperaClube >= metadeEspera };
+}
+
 function getEsperaLimite(confirmados) {
   const n = getTamanhoTime(confirmados);
   return n;
@@ -1712,19 +1767,49 @@ async function confirmarPresenca() {
 
   const now = Date.now();
   const peladaDate = parsePeladaDate(p.data);
-  const h48 = 48 * 60 * 60 * 1000;
   const ehMensalista = jogadorMensalista(uid);
 
-  // Janela de prioridade: somente mensalistas até 48h antes
-  const dentroPrioridade = peladaDate ? now < (peladaDate - h48) : true; // sem data = prioridade ativa
-  if (dentroPrioridade && !ehMensalista) {
-    showToast('⏳ Lista reservada para mensalistas até 48h antes da pelada'); return;
-  }
+  // Prioridade aplicada intrinsecamente:
+  // - Avulsos podem confirmar a qualquer momento
+  // - Se lista cheia e mensalista confirmar → último avulso vai pra espera
+  // - 24h antes → avulsos inadimplentes são removidos e substituídos (checkAvulsosInadimplentes)
 
   const vagas = getVagasLimite(p.confirmados, p.espera);
   const esperaMax2 = getEsperaLimite(p.confirmados);
   const listaCheia = p.confirmados.length >= vagas;
   const esperaCheia = p.espera.length >= esperaMax2;
+
+  // No clássico: verifica limite por clube
+  const tipoPresenca2 = p.tipo || (p.tipoPelada === 'classico' ? 'classico' : 'normal');
+  if (tipoPresenca2 === 'classico') {
+    const jogador2 = appData.jogadores.find(x => x.id === uid);
+    const clube = jogador2?.clube;
+    if (!clube || (clube !== 'atleticano' && clube !== 'cruzeirense')) {
+      showToast('⚽ No Clássico só participam atleticanos e cruzeirenses cadastrados'); return;
+    }
+    const nomeClube = clube === 'atleticano' ? '🐓 Galo' : '🦊 Cruzeiro';
+    const { vagasClube, cheio: clubeCheio } = getVagasLimiteClube(p.confirmados, p.espera, clube);
+    const { metadeEspera, cheio: esperaClubeCheia } = getEsperaLimiteClube(p.confirmados, p.espera, clube);
+
+    if (!clubeCheio) {
+      // Vaga disponível para o clube
+      p.confirmados.push(uid);
+      if (!ehMensalista) await gerarDebitoAvulsoPresenca(uid, p.data, null);
+      showToast(`Presença confirmada! ✅ ${nomeClube}`);
+    } else if (!esperaClubeCheia) {
+      // Lista do clube cheia → vai para espera do clube
+      p.espera.push(uid);
+      showToast(`Lista ${nomeClube} cheia — adicionado à espera ✅`);
+    } else {
+      showToast(`Lista e espera do ${nomeClube} completas (${vagasClube} conf + ${metadeEspera} espera)`); return;
+    }
+
+    appData.presenca = p;
+    await firestoreSet('config', 'presenca', p);
+    saveLocal();
+    renderPresenca();
+    return;
+  }
 
   if (!listaCheia) {
     // Vaga disponível → confirmar
