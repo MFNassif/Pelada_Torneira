@@ -431,14 +431,13 @@ function calcIdx(jogs) {
   const med=medioGrupo(jogs);
   const adjs=jogs.map(j=>scoreAdj(j,med));
   const notas=jogs.map(j=>+(j.nota||5).toFixed(1));
-  // Score estatístico: normalizado relativamente ao grupo (0–1), depois × 10
-  // Nota opinativa: entra DIRETA na escala 0–10 (já é absoluta — 3.5 deve valer 3.5, não 0)
-  const adjN=normGroup(adjs);
+  // Ambas as entradas normalizadas relativamente ao grupo (0–1) para blend consistente
+  const adjN  = normGroup(adjs);   // score estatístico normalizado
+  const notaN = normGroup(notas);  // nota opinativa normalizada (mesmo referencial)
   return jogs.map((j,i)=>{
     const n=nDomAtivo(j),a=alpha(n);
-    const notaAbs = notas[i] / 10;          // 0–10 → 0–1 para o blend
-    const IF=+((a*notaAbs+(1-a)*adjN[i])*10).toFixed(4); // resultado final 0–10
-    return {id:j.id,nome:j.nome,nota:notas[i],notaN:notaAbs,sAdj:adjs[i],sAdjN:adjN[i],alpha:a,IF,n,nTotal:nDom(j)};
+    const IF=+((a*notaN[i]+(1-a)*adjN[i])*10).toFixed(4); // resultado final 0–10
+    return {id:j.id,nome:j.nome,nota:notas[i],notaN:notaN[i],sAdj:adjs[i],sAdjN:adjN[i],alpha:a,IF,n,nTotal:nDom(j)};
   });
 }
 
@@ -895,12 +894,17 @@ Pix: mfnassif16@gmail.com`;
 // Keep for backwards compat
 const DESCRICAO_PELADA = getDescricaoPelada('11:30 às 13:00');
 
-const REGRAS_PELADA = `• 1ª partida: 10 min, sem limite de gol (2 primeiros times completos)
+function getRegrasPelada() {
+  const v = getValores();
+  return `• 1ª partida: 10 min, sem limite de gol (2 primeiros times completos)
 • Demais partidas: 7 min ou 2 gols
-• Mensalista: R$80/mês, prioridade até Sex 12h
-• Avulso: R$25/pelada, pagar até Sáb 12h
-• Falta sem aviso <24h: mensalista R$10 / avulso R$25
-• Mensalidade em atraso: multa R$5/semana após 5º dia útil`;
+• Mensalista: R$${v.mensal.toFixed(0)}/mês, prioridade até Sex 12h
+• Avulso: R$${v.avulso.toFixed(0)}/pelada, pagar até Sáb 12h
+• Falta sem aviso <24h: mensalista R$${v.multa.toFixed(0)} / avulso R$${v.avulso.toFixed(0)}
+• Mensalidade em atraso: multa R$${v.multaSem.toFixed(0)}/semana após 5º dia útil`;
+}
+// Keep for backwards compat
+const REGRAS_PELADA = getRegrasPelada();
 
 function renderPresenca() {
   const cont = document.getElementById('homePresenca');
@@ -1645,7 +1649,7 @@ async function desmarcarPresenca() {
     if (dentro24h) {
       // < 24h: gera multa automática
       const multaValor = ehMens ? getValores().multa : getValores().avulso;
-      const tipoStr = ehMens ? `mensalista — R$${multaValor}` : `avulso — R$${multaValor} (valor integral)`;
+      const tipoStr = ehMens ? `mensalista — R$${multaValor.toFixed(2)}` : `avulso — R$${multaValor.toFixed(2)} (valor integral)`;
       if (!confirm(`Desmarcar com menos de 24h gera multa de ${tipoStr}. Confirmar?`)) return;
       await adicionarDebito(uid, 'multa', multaValor, `Desmarcou <24h — Pelada ${p.data||''}`);
       showToast(`⚠️ Multa de R$${multaValor} gerada`);
@@ -2271,12 +2275,19 @@ function openCadastro(id=null) {
   document.getElementById('inpNome').value='';
   document.getElementById('inpNota').value='';
   document.getElementById('editId').value=id||'';
+  // Atualiza labels do select com valores atuais configurados
+  const sel=document.getElementById('inpTipo');
+  if(sel){
+    const v=getValores();
+    sel.options[0].text=`Avulso (R$${v.avulso.toFixed(2)}/pelada)`;
+    sel.options[1].text=`Mensalista (R$${v.mensal.toFixed(2)}/mês)`;
+  }
   if(id){
     const j=appData.jogadores.find(x=>x.id===id);
     if(j){
       document.getElementById('inpNome').value=j.nome;
       document.getElementById('inpNota').value=j.nota?.toFixed(1);
-      const sel=document.getElementById('inpTipo');if(sel)sel.value=j.tipoJogador||'avulso';
+      if(sel)sel.value=j.tipoJogador||'avulso';
       const clube=document.getElementById('inpClube');if(clube)clube.value=j.clube||'';
       const goleiro=document.getElementById('inpGoleiro');if(goleiro)goleiro.checked=!!j.goleiro;
     }
@@ -2496,7 +2507,7 @@ function openPerfil(id) {
         ${(appData.admins||[]).includes(j.id)?'⬇️ Remover admin':'⬆️ Tornar admin'}
       </button>
       <button onclick="toggleMensalistaPerfil('${j.id}')" style="background:${j.tipoJogador==='mensalista'?'rgba(255,68,68,.1)':'rgba(200,241,53,.08)'};border:1px solid ${j.tipoJogador==='mensalista'?'rgba(255,68,68,.25)':'var(--border-gold)'};border-radius:99px;color:${j.tipoJogador==='mensalista'?'var(--red)':'var(--gold)'};font-size:11px;padding:5px 14px;cursor:pointer;font-family:'DM Sans',sans-serif">
-        ${j.tipoJogador==='mensalista'?'⬇️ Tornar avulso':'⬆️ Tornar mensalista'}
+        ${j.tipoJogador==='mensalista'?'⬇️ Tornar avulso':`⬆️ Tornar mensalista (R$${getValores().mensal.toFixed(2)}/mês)`}
       </button>
     </div>` : ''}
     <div class="pills">
@@ -4047,7 +4058,7 @@ function renderFinancas() {
   const corBorda = atrasado5du && temInadimplenteMensal ? 'rgba(255,68,68,.3)' : 'var(--border-gold)';
   const corTexto = atrasado5du && temInadimplenteMensal ? '#ef4444' : 'var(--gold-lt)';
   const icone = atrasado5du && temInadimplenteMensal ? '⚠️' : '📅';
-  const avisoAtrasado = mostrarAtraso ? ` — ${semanas} sem. em atraso (+R$${(semanas*5).toFixed(0)})` : '';
+  const avisoAtrasado = mostrarAtraso ? ` — ${semanas} sem. em atraso (+R$${(semanas*getValores().multaSem).toFixed(0)})` : '';
   const aviso5du = `<div style="background:${corAviso};border:1px solid ${corBorda};border-radius:10px;padding:12px 14px;margin-bottom:16px">
     <div style="font-size:13px;font-weight:700;color:${corTexto}">${icone} MENSALISTAS: Período ${inicioStr} → ${prazoStr}${avisoAtrasado}</div>
     <div style="font-size:11px;color:var(--t2);margin-top:3px">R$${getValores().mensal.toFixed(2)} via Pix: mfnassif16@gmail.com · Vencimento: ${prazoStr}</div>
@@ -4328,13 +4339,13 @@ function abrirAddDebito(jogadorId) {
       <div class="m-sub">${j?.nome}</div>
       <div class="field"><label>Tipo</label>
         <select class="input" id="debitoTipo">
-          <option value="mensal">Mensalidade (R$80)</option>
-          <option value="avulso">Avulso (R$25)</option>
-          <option value="multa">Multa (R$10)</option>
+          <option value="mensal">Mensalidade (R$${getValores().mensal.toFixed(2)})</option>
+          <option value="avulso">Avulso (R$${getValores().avulso.toFixed(2)})</option>
+          <option value="multa">Multa (R$${getValores().multa.toFixed(2)})</option>
           <option value="outro">Outro</option>
         </select>
       </div>
-      <div class="field"><label>Valor (R$)</label><input class="input" id="debitoValor" type="number" step="0.01" min="0" placeholder="80.00"></div>
+      <div class="field"><label>Valor (R$)</label><input class="input" id="debitoValor" type="number" step="0.01" min="0" placeholder="${getValores().mensal.toFixed(2)}"></div>
       <div class="field"><label>Descrição</label><input class="input" id="debitoDesc" placeholder="Mensalidade março"></div>
       <div class="field"><label>Data</label><input class="input" id="debitoData" type="date"></div>
       <button class="btn btn-gold" onclick="executarAddDebito('${jogadorId}')">ADICIONAR</button>
@@ -4346,7 +4357,7 @@ function abrirAddDebito(jogadorId) {
     const vals = {mensal:getValores().mensal, avulso:getValores().avulso, multa:getValores().multa, outro:''};
     overlay.querySelector('#debitoValor').value = vals[e.target.value] || '';
   });
-  overlay.querySelector('#debitoValor').value = 80;
+  overlay.querySelector('#debitoValor').value = getValores().mensal;
   // Set today as default date
   const today = new Date().toISOString().split('T')[0];
   overlay.querySelector('#debitoData').value = today;
@@ -4558,7 +4569,7 @@ async function gerarMensalidadesMes() {
   if (!currentUser?.isAdmin) return;
   const mes = getMesReferencia();
   const data5du = getUltimo5du();
-  if (!confirm(`Gerar débito de mensalidade (R$80) para todos os mensalistas — ${mes}?`)) return;
+  if (!confirm(`Gerar débito de mensalidade (R$${getValores().mensal.toFixed(2)}) para todos os mensalistas — ${mes}?`)) return;
   const mensalistas = appData.jogadores.filter(j => j.tipoJogador === 'mensalista');
   let count = 0;
   for (const j of mensalistas) {
