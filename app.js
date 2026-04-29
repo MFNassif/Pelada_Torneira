@@ -1086,44 +1086,47 @@ Pix: mfnassif16@gmail.com</div>
         if (tipoPresenca !== 'classico') {
           return '<div style="margin-bottom:10px">' + confirmadosNomes.map(rowJog).join('') + '</div>';
         }
+        // Clássico: 22+6 (11+11 confirmados, 3+3 espera)
         const galos = confirmadosNomes.filter(p => p.clube === 'atleticano');
         const raposas = confirmadosNomes.filter(p => p.clube === 'cruzeirense');
         const semClube = confirmadosNomes.filter(p => !p.clube || (p.clube !== 'atleticano' && p.clube !== 'cruzeirense'));
-        const metadeVagasDisp = Math.floor(vagas / 2);
-        const secTitle = (label, count, max) => '<div style="font-size:10px;letter-spacing:1px;color:var(--t2);margin:8px 0 4px;font-family:Oswald,sans-serif">' + label + ' (' + count + (max !== undefined ? '/' + max : '') + ')</div>';
+        const galosEsp = esperaNomes.filter(p => appData.jogadores.find(x=>x.id===p.id)?.clube === 'atleticano');
+        const rapEsp = esperaNomes.filter(p => appData.jogadores.find(x=>x.id===p.id)?.clube === 'cruzeirense');
+
+        const secHeader = (label, count, max) =>
+          '<div style="font-size:10px;letter-spacing:1px;color:var(--t2);margin:10px 0 4px;font-family:Oswald,sans-serif">' +
+          label + ' (' + count + '/' + max + ')</div>';
+
+        const rowEsp = (p, i) =>
+          '<div style="font-size:12px;padding:2px 0;color:' + (p.id===userId?'var(--gold)':'var(--t3)') + ';display:flex;align-items:center;gap:6px">' +
+          '<span style="color:var(--t3);min-width:18px">' + (i+1) + '.</span>' +
+          '<span>' + p.nome + (p.id===userId?' <span style="font-size:9px;color:var(--gold)">← você</span>':'') + '</span>' +
+          '</div>';
+
+        const renderTime = (label, lista, max, espLista, espMax) => {
+          const conf = lista.length ? lista.map(rowJog).join('') : '<div style="font-size:12px;color:var(--t3);padding:2px 0">—</div>';
+          const esp = espLista.length
+            ? '<div style="font-size:10px;letter-spacing:1px;color:var(--t3);margin:8px 0 3px;font-family:Oswald,sans-serif">Espera (' + espLista.length + '/' + espMax + ')</div>' +
+              espLista.map(rowEsp).join('')
+            : '';
+          return secHeader(label, lista.length, max) + conf + esp;
+        };
+
         return '<div style="margin-bottom:10px">' +
-          (galos.length || true ? secTitle('🐓 GALO', galos.length, metadeVagasDisp) + (galos.length ? galos.map(rowJog).join('') : '<div style="font-size:12px;color:var(--t3);padding:2px 0">—</div>') : '') +
-          (raposas.length || true ? secTitle('🦊 CRUZEIRO', raposas.length, metadeVagasDisp) + (raposas.length ? raposas.map(rowJog).join('') : '<div style="font-size:12px;color:var(--t3);padding:2px 0">—</div>') : '') +
-          (semClube.length ? secTitle('SEM CLUBE', semClube.length) + semClube.map(rowJog).join('') : '') +
+          renderTime('🐓 GALO', galos, 11, galosEsp, 3) +
+          '<div style="border-top:1px solid var(--border);margin:10px 0"></div>' +
+          renderTime('🦊 CRUZEIRO', raposas, 11, rapEsp, 3) +
+          (semClube.length ? secHeader('SEM CLUBE', semClube.length) + semClube.map(rowJog).join('') : '') +
           '</div>';
       })()}
-      ${esperaNomes.length > 0 ? `
-      <div style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px">
-        <div style="font-size:10px;letter-spacing:1px;color:var(--t2);margin-bottom:6px">LISTA DE ESPERA</div>
-        ${tipoPresenca === 'classico' ? (() => {
-          const metadeEsp = Math.floor(esperaMax / 2);
-          const galosEsp = esperaNomes.filter(p => appData.jogadores.find(x=>x.id===p.id)?.clube === 'atleticano');
-          const rapEsp = esperaNomes.filter(p => appData.jogadores.find(x=>x.id===p.id)?.clube === 'cruzeirense');
-          const secE = (label, lista, max) => lista.length > 0
-            ? `<div style="font-size:9px;letter-spacing:1px;color:var(--t3);margin:4px 0 2px;font-family:Oswald,sans-serif">${label} (${lista.length}/${max})</div>` +
-              lista.map((p,i) => `<div style="font-size:12px;padding:2px 0;color:${p.id===userId?'var(--gold)':'var(--t2)'}">${i+1}. ${p.nome}${p.id===userId?' ← você':''}</div>`).join('')
-            : '';
-          return secE('🐓 GALO', galosEsp, metadeEsp) + secE('🦊 CRUZEIRO', rapEsp, metadeEsp);
-        })() : esperaNomes.map(p => `
-          <div style="font-size:12px;padding:2px 0;color:${p.id===userId?'var(--gold)':'var(--t2)'}">
-            ${p.pos}. ${p.nome}${p.id===userId?' ← você':''}
-          </div>`).join('')}
-      </div>` : ''}
       <div style="font-size:10px;color:var(--t3);margin-top:10px;margin-bottom:12px">
         ${tipoPresenca === 'classico' ? (() => {
           const galosConf = confirmadosNomes.filter(p => p.clube === 'atleticano').length;
           const rapConf = confirmadosNomes.filter(p => p.clube === 'cruzeirense').length;
           const galosEsp = espera.filter(id => appData.jogadores.find(x=>x.id===id)?.clube === 'atleticano').length;
           const rapEsp = espera.filter(id => appData.jogadores.find(x=>x.id===id)?.clube === 'cruzeirense').length;
-          const metadeVagas = Math.floor(vagas / 2);
-          const metadeEspera = Math.floor(esperaMax / 2);
-          return `🐓 ${galosConf}/${metadeVagas} conf · 🦊 ${rapConf}/${metadeVagas} conf` +
-            (galosEsp + rapEsp > 0 ? ` · espera: 🐓${galosEsp}/${metadeEspera} 🦊${rapEsp}/${metadeEspera}` : '');
+          return `🐓 ${galosConf}/11 conf · 🦊 ${rapConf}/11 conf` +
+            (galosEsp + rapEsp > 0 ? ` · espera: 🐓${galosEsp}/3 🦊${rapEsp}/3` : '');
         })() : `${total}/${vagas} confirmados · ${espera.length}/${esperaMax} espera`}
         ${total >= n*3 ? ` · <span style="color:var(--gold)">✓ ${nTimes} times / ${nTimes>=4?'2h':'1h30'}</span>` : ''}
       </div>
@@ -1678,21 +1681,18 @@ function getVagasLimite(confirmados, espera) {
 }
 
 function getVagasLimiteClube(confirmados, espera, clube) {
-  // No clássico: cada clube tem direito a metade das vagas totais
-  const total = getVagasLimite(confirmados, espera);
-  const metade = Math.floor(total / 2);
-  // Conta confirmados do clube
+  // No clássico: cada clube tem 11 vagas fixas (22 total = 11+11)
+  const vagasClube = 11;
   const confClube = (confirmados||[]).filter(id => {
     const j = appData.jogadores.find(x => x.id === id);
     return j?.clube === clube;
   }).length;
-  return { vagasClube: metade, confClube, cheio: confClube >= metade };
+  return { vagasClube, confClube, cheio: confClube >= vagasClube };
 }
 
 function getEsperaLimiteClube(confirmados, espera, clube) {
-  // No clássico: cada clube tem direito a metade das vagas de espera
-  const totalEspera = getEsperaLimite(confirmados);
-  const metadeEspera = Math.floor(totalEspera / 2);
+  // No clássico: cada clube tem 3 vagas de espera fixas (6 total = 3+3)
+  const metadeEspera = 3;
   const esperaClube = (espera||[]).filter(id => {
     const j = appData.jogadores.find(x => x.id === id);
     return j?.clube === clube;
