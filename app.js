@@ -4383,7 +4383,7 @@ function abrirDarBaixa(jogadorId) {
   const totalPago = (fin.pagamentos||[]).reduce((s,p)=>s+(p.valor||0),0);
   let acumulado = 0;
   const debitosAbertos = debitos.reduce((acc, d, i) => {
-    if (!d.quitado) acc.push({ i, desc: d.descricao || d.tipo, valor: d.valor, data: d.data, tipo: d.tipo });
+    if (!d.quitado) acc.push({ i, id: d.id, desc: d.descricao || d.tipo, valor: d.valor, data: d.data, tipo: d.tipo });
     return acc;
   }, []);
   if (debitosAbertos.length === 0) { showToast('Nenhum débito em aberto'); return; }
@@ -4399,8 +4399,8 @@ function abrirDarBaixa(jogadorId) {
       <div class="field">
         <label>Selecione o débito</label>
         <select class="input" id="baixaDebitoIdx" onchange="atualizarValorBaixa('${jogadorId}')">
-          <option value="-1">— Escolha um débito —</option>
-          ${debitosAbertos.map(d => `<option value="${d.i}">${d.desc} — R$${d.valor.toFixed(2)} (${d.data})</option>`).join('')}
+          <option value="">— Escolha um débito —</option>
+          ${debitosAbertos.map(d => `<option value="${d.id}">${d.desc} — R$${d.valor.toFixed(2)} (${d.data})</option>`).join('')}
         </select>
       </div>
       <div class="field">
@@ -4420,22 +4420,22 @@ function abrirDarBaixa(jogadorId) {
 
 function atualizarValorBaixa(jogadorId) {
   const sel = document.getElementById('baixaDebitoIdx');
-  const idx = parseInt(sel?.value);
-  if (isNaN(idx) || idx < 0) return;
+  const debitoId = sel?.value;
+  if (!debitoId) return;
   const fin = getFinancasJogador(jogadorId);
-  const debito = fin.debitos?.[idx];
+  const debito = (fin.debitos||[]).find(d => d.id === debitoId);
   if (debito) document.getElementById('baixaValor').value = debito.valor.toFixed(2);
 }
 
 async function executarBaixa(jogadorId) {
   const sel = document.getElementById('baixaDebitoIdx');
-  const idx = parseInt(sel?.value);
-  if (isNaN(idx) || idx < 0) { showToast('Selecione um débito'); return; }
+  const debitoId = sel?.value;
+  if (!debitoId) { showToast('Selecione um débito'); return; }
   const val = parseFloat(document.getElementById('baixaValor')?.value);
   const dataInput = document.getElementById('baixaDataPag')?.value;
   if (isNaN(val) || val <= 0) { showToast('Valor inválido'); return; }
   const fin = getFinancasJogador(jogadorId);
-  const debito = fin.debitos?.[idx];
+  const debito = (fin.debitos||[]).find(d => d.id === debitoId);
   if (!debito) { showToast('Débito não encontrado'); return; }
   const dataFmt = dataInput
     ? new Date(dataInput + 'T12:00:00').toLocaleDateString('pt-BR')
