@@ -1279,22 +1279,14 @@ function exportarListaPresenca() {
       .filter(j => j && !j.clube)
       .sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR'));
 
-    texto = `Clássico do Torneira - ${data}
-${local}
-${horario}
-${pix}
-
-🐓 GALO:
-${atleticanos.map((j,i) => `  ${i+1}. ${j.nome}`).join('
-') || '  —'}
-
-🦊 CRUZEIRO:
-${cruzeirenses.map((j,i) => `  ${i+1}. ${j.nome}`).join('
-') || '  —'}${semClube.length > 0 ? '
-
-SEM CLUBE:
-' + semClube.map((j,i) => `  ${i+1}. ${j.nome}`).join('
-') : ''}`;
+    const nl = '\n';
+    texto = 'Clássico do Torneira - ' + data + nl +
+      local + nl + horario + nl + pix + nl + nl +
+      '🐓 GALO:' + nl +
+      (atleticanos.map((j,i) => '  ' + (i+1) + '. ' + j.nome).join(nl) || '  —') + nl + nl +
+      '🦊 CRUZEIRO:' + nl +
+      (cruzeirenses.map((j,i) => '  ' + (i+1) + '. ' + j.nome).join(nl) || '  —') +
+      (semClube.length > 0 ? nl + nl + 'SEM CLUBE:' + nl + semClube.map((j,i) => '  ' + (i+1) + '. ' + j.nome).join(nl) : '');
 
   } else {
     // Ordem alfabética
@@ -1302,24 +1294,18 @@ SEM CLUBE:
       .map(id => appData.jogadores.find(x=>x.id===id)?.nome || id)
       .sort((a,b) => a.localeCompare(b,'pt-BR'));
 
-    texto = `Pelada do Torneira - ${data}
-${local}
-${horario}
-${pix}
-
-${nomes.map((n,i) => `  ${i+1}. ${n}`).join('
-')}`;
+    const nl2 = '\n';
+    texto = 'Pelada do Torneira - ' + data + nl2 +
+      local + nl2 + horario + nl2 + pix + nl2 + nl2 +
+      nomes.map((n,i) => '  ' + (i+1) + '. ' + n).join(nl2);
   }
 
   // Add espera if any
   if (espera.length > 0) {
-    const esperaNomes = espera
-      .map(id => appData.jogadores.find(x=>x.id===id)?.nome || id);
-    texto += `
-
-LISTA DE ESPERA:
-${esperaNomes.map((n,i) => `  ${i+1}. ${n}`).join('
-')}`;
+    const nl3 = '\n';
+    const esperaNomes = espera.map(id => appData.jogadores.find(x=>x.id===id)?.nome || id);
+    texto += nl3 + nl3 + 'LISTA DE ESPERA:' + nl3 +
+      esperaNomes.map((n,i) => '  ' + (i+1) + '. ' + n).join(nl3);
   }
 
   // Copy to clipboard
