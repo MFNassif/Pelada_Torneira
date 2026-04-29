@@ -484,7 +484,11 @@ function totalDebitoJogador(jogadorId, filtroDebito) {
   let debitos = (fin.debitos||[]).filter(d => !d.quitado);
   if (filtroDebito) debitos = debitos.filter(filtroDebito);
   const total = debitos.reduce((s,d) => s + (d.valor||0), 0);
-  const pago = (fin.pagamentos||[]).reduce((s,p) => s + (p.valor||0), 0);
+  // Só conta pagamentos NÃO vinculados a um débito já quitado individualmente
+  const quitadosIds = new Set((fin.debitos||[]).filter(d => d.quitado && d.id).map(d => d.id));
+  const pago = (fin.pagamentos||[])
+    .filter(p => !p.debitoId || !quitadosIds.has(p.debitoId))
+    .reduce((s,p) => s + (p.valor||0), 0);
   let saldo = Math.max(0, total - pago);
   // Multa semanal automática para mensalistas em atraso
   if (jogadorMensalista(jogadorId)) {
@@ -510,7 +514,11 @@ function saldoDebitosPorTipo(jogadorId) {
   const fin = getFinancasJogador(jogadorId);
   const debitos = (fin.debitos || []).filter(d => !d.quitado); // só débitos ativos
   const pagamentos = fin.pagamentos || [];
-  const totalPago = pagamentos.reduce((s,p) => s + (p.valor||0), 0);
+  // Só conta pagamentos NÃO vinculados a um débito já quitado individualmente
+  const quitadosIds = new Set((fin.debitos||[]).filter(d => d.quitado && d.id).map(d => d.id));
+  const totalPago = pagamentos
+    .filter(p => !p.debitoId || !quitadosIds.has(p.debitoId))
+    .reduce((s,p) => s + (p.valor||0), 0);
 
   const somaTipo = tipo => debitos.filter(d=>d.tipo===tipo).reduce((s,d)=>s+(d.valor||0), 0);
   return {
@@ -1518,6 +1526,7 @@ async function adminBaixaAvulsoPresenca(jogadorId) {
   if (!fin.pagamentos) fin.pagamentos = [];
   fin.pagamentos.push({
     id: 'p'+Date.now(),
+    debitoId: debito.id,
     valor: debito.valor,
     descricao: `Avulso pago — Pelada ${sorteioData}`,
     data: new Date().toLocaleDateString('pt-BR')
@@ -4446,6 +4455,7 @@ async function executarBaixa(jogadorId) {
   if (!fin.pagamentos) fin.pagamentos = [];
   fin.pagamentos.push({
     id: 'p' + Date.now(),
+    debitoId: debito.id,
     valor: val,
     descricao: `Baixa: ${debito.descricao || debito.tipo}`,
     data: dataFmt
