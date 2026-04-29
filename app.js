@@ -1113,9 +1113,9 @@ Pix: mfnassif16@gmail.com</div>
         };
 
         return '<div style="margin-bottom:10px">' +
-          renderTime('🐓 GALO', galos, 11, galosEsp, 3) +
+          renderTime('🐓 GALO', galos, getVagasLimiteClube(confirmados, espera, 'atleticano').vagasClube, galosEsp, 3) +
           '<div style="border-top:1px solid var(--border);margin:10px 0"></div>' +
-          renderTime('🦊 CRUZEIRO', raposas, 11, rapEsp, 3) +
+          renderTime('🦊 CRUZEIRO', raposas, getVagasLimiteClube(confirmados, espera, 'cruzeirense').vagasClube, rapEsp, 3) +
           (semClube.length ? secHeader('SEM CLUBE', semClube.length) + semClube.map(rowJog).join('') : '') +
           '</div>';
       })()}
@@ -1125,7 +1125,9 @@ Pix: mfnassif16@gmail.com</div>
           const rapConf = confirmadosNomes.filter(p => p.clube === 'cruzeirense').length;
           const galosEsp = espera.filter(id => appData.jogadores.find(x=>x.id===id)?.clube === 'atleticano').length;
           const rapEsp = espera.filter(id => appData.jogadores.find(x=>x.id===id)?.clube === 'cruzeirense').length;
-          return `🐓 ${galosConf}/11 conf · 🦊 ${rapConf}/11 conf` +
+          const vagasG = getVagasLimiteClube(confirmados, espera, 'atleticano').vagasClube;
+          const vagasC = getVagasLimiteClube(confirmados, espera, 'cruzeirense').vagasClube;
+          return `🐓 ${galosConf}/${vagasG} conf · 🦊 ${rapConf}/${vagasC} conf` +
             (galosEsp + rapEsp > 0 ? ` · espera: 🐓${galosEsp}/3 🦊${rapEsp}/3` : '');
         })() : `${total}/${vagas} confirmados · ${espera.length}/${esperaMax} espera`}
         ${total >= n*3 ? ` · <span style="color:var(--gold)">✓ ${nTimes} times / ${nTimes>=4?'2h':'1h30'}</span>` : ''}
@@ -1668,36 +1670,78 @@ function getTamanhoTime(confirmados) {
 }
 
 function getVagasLimite(confirmados, espera) {
-  // Lógica: times * n + espera n; quando espera cheia → sobe 1 multiplicador
-  // Times de n jogadores: 3 times → confirmados = n*3, espera = n
-  // Ao completar espera → 4 times → confirmados = n*4 + espera = n
+  // Pelada normal: começa com 3 times, expande +1 time quando espera cheia
   const n = getTamanhoTime(confirmados);
   const totalConf = (confirmados||[]).length;
   const totalEsp  = (espera||[]).length;
-  // Patamar atual de times (começa em 3)
-  // Se espera cheia e ainda não no próximo patamar → expande
   if (totalEsp >= n || totalConf >= n*4) return n*4;
   return n*3;
 }
 
-function getVagasLimiteClube(confirmados, espera, clube) {
-  // No clássico: cada clube tem 11 vagas fixas (22 total = 11+11)
-  const vagasClube = 11;
-  const confClube = (confirmados||[]).filter(id => {
+// ── Clássico: helpers de clube ─────────────────────────────────────────────
+// Base por time: 2*(n-1)+1  (n=4→7, n=5→9, n=6→11)
+// Expansão: cada vez que AMBOS os times têm ≥1 na espera, confirmados sobem +1
+// por time (até o limite de 3 na espera de cada time).
+// Espera: fixo em 3 por time.
+
+function _confPorClube(confirmados, clube) {
+  return (confirmados||[]).filter(id => {
     const j = appData.jogadores.find(x => x.id === id);
     return j?.clube === clube;
   }).length;
+}
+function _espPorClube(espera, clube) {
+  return (espera||[]).filter(id => {
+    const j = appData.jogadores.find(x => x.id === id);
+    return j?.clube === clube;
+  }).length;
+}
+
+function getVagasLimiteClube(confirmados, espera, clube) {
+  const n = getTamanhoTime(confirmados);
+  const base = 2 * (n - 1) + 1;
+  // Quantas expansões já aconteceram = min(espGalo, espCruzeiro) que "passaram"
+  // = número de vezes que ambos os lados tiveram ≥1 na espera simultaneamente.
+  // Aproximamos pelo total de confirmados acima da base em cada time:
+  const confGalo = _confPorClube(confirmados, 'atleticano');
+  const confCruz = _confPorClube(confirmados, 'cruzeirense');
+  // Expansões = quanto o menor lado já cresceu acima da base
+  const expansoes = Math.min(Math.max(0, confGalo - base), Math.max(0, confCruz - base));
+  const vagasClube = base + expansoes;
+  const confClube = clube === 'atleticano' ? confGalo : confCruz;
   return { vagasClube, confClube, cheio: confClube >= vagasClube };
 }
 
 function getEsperaLimiteClube(confirmados, espera, clube) {
-  // No clássico: cada clube tem 3 vagas de espera fixas (6 total = 3+3)
-  const metadeEspera = 3;
-  const esperaClube = (espera||[]).filter(id => {
-    const j = appData.jogadores.find(x => x.id === id);
-    return j?.clube === clube;
-  }).length;
+  const metadeEspera = 3; // sempre 3 por time
+  const esperaClube = _espPorClube(espera, clube);
   return { esperaClube, metadeEspera, cheio: esperaClube >= metadeEspera };
+}
+
+// Verifica se o clássico deve expandir (ambos com ≥1 na espera) e executa
+async function expandirClassicoSeNecessario(p) {
+  const espGalo = _espPorClube(p.espera, 'atleticano');
+  const espCruz = _espPorClube(p.espera, 'cruzeirense');
+  if (espGalo >= 1 && espCruz >= 1) {
+    // Promove 1 de cada lado
+    const promoverDoClube = async (clube) => {
+      const idx = (p.espera||[]).findIndex(id => {
+        const j = appData.jogadores.find(x => x.id === id);
+        return j?.clube === clube;
+      });
+      if (idx < 0) return;
+      const promovido = p.espera[idx];
+      p.espera.splice(idx, 1);
+      p.confirmados.push(promovido);
+      if (!jogadorMensalista(promovido)) {
+        await gerarDebitoAvulsoPresenca(promovido, p.data || '', 'promovido da espera — expansão clássico');
+      }
+    };
+    await promoverDoClube('atleticano');
+    await promoverDoClube('cruzeirense');
+    return true;
+  }
+  return false;
 }
 
 function getEsperaLimite(confirmados) {
@@ -1795,6 +1839,8 @@ async function confirmarPresenca() {
       // Lista do clube cheia → vai para espera do clube
       p.espera.push(uid);
       showToast(`Lista ${nomeClube} cheia — adicionado à espera ✅`);
+      // Verifica se ambos os times têm espera → expande automaticamente
+      await expandirClassicoSeNecessario(p);
     } else {
       showToast(`Lista e espera do ${nomeClube} completas (${vagasClube} conf + ${metadeEspera} espera)`); return;
     }
@@ -1898,8 +1944,26 @@ async function desmarcarPresenca() {
 
     p.confirmados = p.confirmados.filter(id => id !== uid);
 
-    // Promover primeiro da espera
-    if ((p.espera||[]).length > 0) {
+    // Promover da espera — no clássico promove do mesmo clube, na pelada normal promove o primeiro
+    const tipoDesm = p.tipo || (p.tipoPelada === 'classico' ? 'classico' : 'normal');
+    if (tipoDesm === 'classico') {
+      const clubeDesm = appData.jogadores.find(x => x.id === uid)?.clube;
+      if (clubeDesm && (p.espera||[]).length > 0) {
+        const idxEsp = p.espera.findIndex(id => {
+          const j = appData.jogadores.find(x => x.id === id);
+          return j?.clube === clubeDesm;
+        });
+        if (idxEsp >= 0) {
+          const promovido = p.espera[idxEsp];
+          p.espera.splice(idxEsp, 1);
+          p.confirmados.push(promovido);
+          if (!jogadorMensalista(promovido)) {
+            await gerarDebitoAvulsoPresenca(promovido, p.data || '', 'promovido da espera — vaga liberada');
+          }
+          showToast('✅ ' + (appData.jogadores.find(x=>x.id===promovido)?.nome || 'Jogador') + ' promovido da espera');
+        }
+      }
+    } else if ((p.espera||[]).length > 0) {
       await promoverDaEspera(p, 'vaga liberada');
     }
   }
