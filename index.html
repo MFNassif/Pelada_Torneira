@@ -1,0 +1,974 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0c0c0c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>App do Torneira</title>
+<link rel="manifest" href="manifest.json">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+/* ── DESIGN TOKENS ─────────────────────────────────── */
+:root {
+  /* Shield palette */
+  --black:   #0c0c0c;
+  --gold:    #C9A84C;
+  --gold-lt: #E8C96A;
+  --gold-dim: rgba(201,168,76,.15);
+  --blue-sh: #1E5FA8;
+  --yellow-sh:#E8A820;
+  --green-sh: #1A7A3C;
+  --red-sh:   #B82020;
+
+  /* UI surfaces */
+  --bg:      #0c0c0c;
+  --s1:      #141414;
+  --s2:      #1c1c1c;
+  --s3:      #252525;
+  --s4:      #2e2e2e;
+  --border:  #2a2a2a;
+  --border-gold: rgba(201,168,76,.3);
+
+  /* Text */
+  --text:    #f0ede6;
+  --t2:      #7a7570;
+  --t3:      #44403c;
+
+  /* Accent */
+  --acc:     var(--gold);
+  --acc-lt:  var(--gold-lt);
+  --acc-dim: var(--gold-dim);
+
+  /* Teams */
+  --t-vermelho: #ef4444;
+  --t-azul:     #3b82f6;
+  --t-branco:   #e8e8e8;
+  --t-preto:    #2a2a2a;
+
+  --r: 14px;
+  --rr: 10px;
+}
+
+/* ── RESET ─────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; overflow: hidden; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'DM Sans', sans-serif;
+  max-width: 480px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* Subtle noise texture */
+body::after {
+  content: '';
+  position: fixed; inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23n)' opacity='.035'/%3E%3C/svg%3E");
+  pointer-events: none; z-index: 998;
+}
+
+/* Gold gradient line at top */
+body::before {
+  content: '';
+  position: fixed; top: 0; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--gold) 30%, var(--gold-lt) 50%, var(--gold) 70%, transparent);
+  z-index: 999;
+}
+
+::-webkit-scrollbar { width: 3px; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* ── HEADER ────────────────────────────────────────── */
+.app-header {
+  flex-shrink: 0;
+  padding: 16px 18px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  background: var(--s1);
+  position: relative;
+}
+
+.logo-wrap { display: flex; align-items: center; gap: 10px; }
+.logo-shield {
+  width: 38px; height: 38px;
+  border-radius: 6px;
+  object-fit: cover;
+  border: 1px solid var(--border-gold);
+}
+.logo-text { line-height: 1; }
+.logo-main {
+  font-family: 'Oswald', sans-serif;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--gold-lt);
+  text-transform: uppercase;
+}
+.logo-sub {
+  font-size: 9px;
+  color: var(--t2);
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  font-weight: 400;
+  margin-top: 1px;
+}
+
+.user-chip {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--s2);
+  border: 1px solid var(--border-gold);
+  border-radius: 99px;
+  padding: 5px 12px 5px 6px;
+  cursor: pointer;
+  transition: border-color .2s, background .2s;
+}
+.user-chip:active { background: var(--s3); }
+.u-avatar {
+  width: 26px; height: 26px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--gold), var(--gold-lt));
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Oswald', sans-serif; font-size: 13px; font-weight: 600; color: #000;
+  flex-shrink: 0;
+}
+.u-name { font-size: 12px; font-weight: 500; max-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.admin-pip { width: 6px; height: 6px; border-radius: 50%; background: var(--gold); flex-shrink: 0; }
+
+/* ── LAYOUT ────────────────────────────────────────── */
+.app-body { flex: 1; overflow: hidden; position: relative; }
+.screen { display: none; position: absolute; inset: 0; overflow-y: auto; padding: 16px 18px 88px; }
+.screen.active { display: block; }
+
+/* ── NAV ───────────────────────────────────────────── */
+.app-nav {
+  flex-shrink: 0;
+  background: var(--s1);
+  border-top: 1px solid var(--border);
+  display: flex;
+  padding: 6px 0 env(safe-area-inset-bottom, 14px);
+}
+.nav-btn {
+  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  background: none; border: none;
+  color: var(--t3); font-size: 7.5px; font-family: 'DM Sans', sans-serif;
+  letter-spacing: .3px; text-transform: uppercase;
+  cursor: pointer; padding: 5px 0; transition: color .2s;
+}
+.nav-btn svg { width: 20px; height: 20px; }
+.nav-btn.active { color: var(--gold); }
+.nav-btn.active svg { filter: drop-shadow(0 0 4px rgba(201,168,76,.4)); }
+
+/* ── SECTION HEADERS ───────────────────────────────── */
+.pg-header { margin-bottom: 18px; margin-top: 4px; }
+.pg-title {
+  font-family: 'Oswald', sans-serif;
+  font-size: 26px; font-weight: 700;
+  letter-spacing: 2px; text-transform: uppercase;
+  color: var(--text);
+  line-height: 1;
+}
+.pg-title span { color: var(--gold); }
+.pg-sub { font-size: 12px; color: var(--t2); margin-top: 3px; }
+.section-lbl {
+  font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
+  color: var(--t2); font-weight: 600; margin-bottom: 10px;
+  display: flex; align-items: center; gap: 6px;
+}
+.section-lbl::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+/* ── CARDS ─────────────────────────────────────────── */
+.card {
+  background: var(--s1);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 16px;
+  margin-bottom: 12px;
+}
+.card.gold-card {
+  background: linear-gradient(135deg, rgba(201,168,76,.08), rgba(201,168,76,.03));
+  border-color: var(--border-gold);
+}
+.card.shield-card {
+  background: var(--s1);
+  border: 1px solid var(--border-gold);
+  position: relative;
+  overflow: hidden;
+}
+.card.shield-card::before {
+  content: '';
+  position: absolute; top: -20px; right: -20px;
+  width: 100px; height: 100px;
+  background: radial-gradient(circle, rgba(201,168,76,.08) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+/* ── BUTTONS ───────────────────────────────────────── */
+.btn {
+  width: 100%; padding: 13px 18px;
+  border-radius: var(--rr); border: none;
+  font-family: 'Oswald', sans-serif;
+  font-size: 16px; font-weight: 600; letter-spacing: 2px;
+  text-transform: uppercase;
+  cursor: pointer; transition: transform .1s, box-shadow .15s;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.btn:active { transform: scale(.97); }
+.btn[disabled] { opacity: .3; pointer-events: none; }
+
+.btn-gold {
+  background: linear-gradient(135deg, var(--gold), var(--gold-lt));
+  color: #000;
+  box-shadow: 0 4px 20px rgba(201,168,76,.25);
+}
+.btn-gold:active { box-shadow: 0 2px 8px rgba(201,168,76,.2); }
+
+.btn-outline {
+  background: transparent;
+  color: var(--gold);
+  border: 1px solid var(--border-gold);
+}
+.btn-ghost {
+  background: var(--s2);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.btn-danger {
+  background: rgba(239,68,68,.1);
+  color: #ef4444;
+  border: 1px solid rgba(239,68,68,.25);
+}
+.btn-sm { padding: 8px 14px; font-size: 13px; width: auto; border-radius: 8px; }
+.row { display: flex; gap: 8px; }
+.row .btn { flex: 1; }
+
+/* ── INPUTS ────────────────────────────────────────── */
+.field { margin-bottom: 14px; }
+.field label {
+  font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase;
+  color: var(--t2); display: block; margin-bottom: 6px; font-weight: 600;
+}
+.input {
+  width: 100%;
+  background: var(--s2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 15px; padding: 11px 14px;
+  outline: none; transition: border-color .2s, box-shadow .2s;
+}
+.input:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(201,168,76,.1); }
+.input::placeholder { color: var(--t3); }
+select.input { cursor: pointer; }
+
+/* ── PLAYER ROW ────────────────────────────────────── */
+.prow {
+  background: var(--s1);
+  border: 1px solid var(--border);
+  border-radius: var(--rr);
+  padding: 11px 13px;
+  margin-bottom: 8px;
+  display: flex; align-items: center; gap: 10px;
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.prow:active, .prow.sel { border-color: var(--gold); background: var(--gold-dim); }
+.p-avatar {
+  width: 36px; height: 36px; border-radius: 50%;
+  background: var(--s3);
+  border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Oswald', sans-serif; font-size: 15px; font-weight: 600;
+  color: var(--t2); flex-shrink: 0;
+  transition: border-color .2s;
+}
+.prow.sel .p-avatar, .prow:active .p-avatar { border-color: var(--gold); color: var(--gold); }
+.p-info { flex: 1; min-width: 0; }
+.p-name { font-weight: 500; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p-meta { font-size: 11px; color: var(--t2); margin-top: 2px; }
+.p-if {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 18px; font-weight: 600;
+  color: var(--gold); flex-shrink: 0;
+}
+.p-if.empty { color: var(--t3); font-size: 11px; font-family: 'DM Sans', sans-serif; }
+.badge-adm {
+  background: var(--gold-dim);
+  border: 1px solid var(--border-gold);
+  color: var(--gold);
+  font-size: 8px; letter-spacing: 1px;
+  padding: 2px 6px; border-radius: 4px; margin-left: 5px;
+  font-family: 'Oswald', sans-serif;
+}
+.icon-btn {
+  background: var(--s2); border: 1px solid var(--border);
+  border-radius: 7px; color: var(--t2);
+  padding: 5px 9px; cursor: pointer; font-size: 13px;
+  transition: border-color .15s;
+}
+.icon-btn:active { border-color: var(--gold); }
+.icon-btn.danger { background: rgba(239,68,68,.08); border-color: rgba(239,68,68,.2); color: #ef4444; }
+
+/* ── RANK BADGE ────────────────────────────────────── */
+.rank-n {
+  width: 30px; height: 30px; border-radius: 50%;
+  background: var(--s3); border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  color: var(--t2); flex-shrink: 0;
+}
+.rank-n.g { background: rgba(201,168,76,.12); border-color: rgba(201,168,76,.3); color: var(--gold-lt); }
+.rank-n.s { background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.12); color: #c0c0c0; }
+.rank-n.b { background: rgba(205,127,50,.1); border-color: rgba(205,127,50,.2); color: #cd7f32; }
+
+/* ── TEAM CARDS ────────────────────────────────────── */
+.team-card { border-radius: var(--r); padding: 14px; margin-bottom: 10px; border: 1px solid; }
+.team-card.t0 { background: rgba(239,68,68,.06);  border-color: rgba(239,68,68,.35); }
+.team-card.t1 { background: rgba(59,130,246,.06); border-color: rgba(59,130,246,.35); }
+.team-card.t2 { background: rgba(232,232,232,.05);border-color: rgba(232,232,232,.3); }
+.team-card.t3 { background: rgba(42,42,42,.5);    border-color: rgba(120,120,120,.4); }
+
+.t-name {
+  font-family: 'Oswald', sans-serif;
+  font-size: 14px; font-weight: 600; letter-spacing: 2px;
+  text-transform: uppercase; margin-bottom: 10px;
+  display: flex; align-items: center; gap: 8px;
+}
+.t-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.team-card.t0 .t-dot { background: var(--t-vermelho); }
+.team-card.t1 .t-dot { background: var(--t-azul); }
+.team-card.t2 .t-dot { background: var(--t-branco); }
+.team-card.t3 .t-dot { background: var(--t-branco); border: 1px solid rgba(120,120,120,.5); }
+.team-card.t0 .t-name { color: var(--t-vermelho); }
+.team-card.t1 .t-name { color: var(--t-azul); }
+.team-card.t2 .t-name { color: var(--t-branco); }
+.team-card.t3 .t-name { color: #a0a0a0; }
+
+.t-player {
+  font-size: 13px; padding: 5px 0;
+  border-bottom: 1px solid rgba(255,255,255,.05);
+  display: flex; justify-content: space-between; align-items: center;
+}
+.t-player:last-child { border: none; }
+.t-player-if { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--t2); }
+.t-strength { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--t2); margin-top: 8px; }
+
+/* ── STATS COUNTER ─────────────────────────────────── */
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 18px; }
+.stat-box {
+  background: var(--s2); border: 1px solid var(--border);
+  border-radius: var(--rr); padding: 12px 6px; text-align: center;
+}
+.stat-lbl { font-size: 9px; letter-spacing: 1px; text-transform: uppercase; color: var(--t2); margin-bottom: 8px; }
+.counter { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.cnt-btn {
+  width: 30px; height: 30px; border-radius: 50%;
+  border: 1px solid var(--border); background: var(--s3);
+  color: var(--text); font-size: 16px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: all .1s; flex-shrink: 0;
+}
+.cnt-btn:active { background: var(--gold); color: #000; border-color: var(--gold); }
+.cnt-v { font-family: 'JetBrains Mono', monospace; font-size: 24px; font-weight: 600; min-width: 26px; text-align: center; color: var(--gold-lt); }
+
+/* ── PROGRESS ──────────────────────────────────────── */
+.prog { background: var(--s2); border-radius: 99px; height: 3px; margin-bottom: 18px; overflow: hidden; }
+.prog-fill { background: linear-gradient(90deg, var(--gold), var(--gold-lt)); height: 100%; border-radius: 99px; transition: width .3s; }
+
+/* ── MODALS ────────────────────────────────────────── */
+.overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,.82); z-index: 200;
+  align-items: flex-end; justify-content: center;
+}
+.overlay.open { display: flex; }
+.modal {
+  background: var(--s1);
+  border-radius: 20px 20px 0 0;
+  padding: 20px 20px 44px;
+  width: 100%; max-width: 480px;
+  max-height: 88vh; overflow-y: auto;
+  border-top: 1px solid var(--border-gold);
+}
+.m-handle { width: 36px; height: 3px; background: var(--border); border-radius: 2px; margin: 0 auto 18px; }
+.m-title { font-family: 'Oswald', sans-serif; font-size: 22px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 4px; color: var(--gold-lt); }
+.m-sub { font-size: 12px; color: var(--t2); margin-bottom: 18px; }
+
+/* ── FLOW ──────────────────────────────────────────── */
+#flow {
+  display: none; position: fixed; inset: 0;
+  background: var(--bg); z-index: 150;
+  overflow-y: auto; max-width: 480px; margin: 0 auto;
+}
+.flow-inner { padding: 16px 18px 100px; }
+.flow-hdr { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+.back-btn {
+  background: var(--s2); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text);
+  padding: 8px 12px; cursor: pointer; font-size: 13px;
+  font-family: 'DM Sans', sans-serif;
+  transition: border-color .15s;
+}
+.back-btn:active { border-color: var(--gold); }
+.flow-ttl { font-family: 'Oswald', sans-serif; font-size: 20px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; flex: 1; color: var(--gold-lt); }
+
+/* ── LOGIN / SETUP ─────────────────────────────────── */
+#loginScreen {
+  position: fixed; inset: 0; background: var(--bg);
+  z-index: 500; display: flex; align-items: center;
+  justify-content: center; flex-direction: column; padding: 32px 22px;
+}
+.login-shield {
+  width: 110px; height: 110px;
+  border-radius: 16px; object-fit: cover;
+  border: 2px solid var(--border-gold);
+  box-shadow: 0 0 40px rgba(201,168,76,.2);
+  margin-bottom: 18px;
+}
+.login-title {
+  font-family: 'Oswald', sans-serif;
+  font-size: 30px; font-weight: 700;
+  letter-spacing: 4px; text-transform: uppercase;
+  color: var(--gold-lt); text-align: center; line-height: 1.1;
+  margin-bottom: 4px;
+}
+.login-tag {
+  font-size: 10px; color: var(--t2); text-align: center;
+  letter-spacing: 1.5px; text-transform: uppercase;
+  margin-bottom: 32px;
+}
+.login-card {
+  width: 100%; max-width: 360px;
+  background: var(--s1);
+  border: 1px solid var(--border-gold);
+  border-radius: var(--r); padding: 22px;
+  box-shadow: 0 0 40px rgba(201,168,76,.06);
+}
+
+#setupScreen {
+  position: fixed; inset: 0; background: var(--bg);
+  z-index: 600; overflow-y: auto; padding: 28px 20px; display: none;
+}
+
+/* ── CHIPS ─────────────────────────────────────────── */
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--s2); border: 1px solid var(--border);
+  border-radius: 99px; padding: 6px 14px; font-size: 12px;
+  cursor: pointer; transition: all .15s; margin: 3px;
+}
+.chip.sel { background: var(--gold-dim); border-color: var(--border-gold); color: var(--gold-lt); }
+
+/* ── PILLS ─────────────────────────────────────────── */
+.pills { display: flex; gap: 6px; margin-bottom: 14px; }
+.pill { flex: 1; background: var(--s2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 6px; text-align: center; }
+.pill-v { font-family: 'JetBrains Mono', monospace; font-size: 18px; font-weight: 600; color: var(--gold); }
+.pill-l { font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: var(--t2); margin-top: 3px; }
+
+/* ── RESTRICTION ROWS ──────────────────────────────── */
+.rrow { background: var(--s2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; }
+.rtype { font-size: 9px; letter-spacing: 1px; text-transform: uppercase; color: var(--t2); margin-bottom: 2px; }
+.del-btn { background: none; border: none; color: #ef4444; cursor: pointer; font-size: 20px; padding: 0 4px; line-height: 1; }
+
+/* ── HISTORY ───────────────────────────────────────── */
+.hist { background: var(--s1); border: 1px solid var(--border); border-radius: var(--rr); padding: 11px 13px; margin-bottom: 8px; }
+.hdate { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--t2); }
+.hstats { display: flex; gap: 14px; margin-top: 5px; font-size: 12px; color: var(--t2); }
+.hstats span { color: var(--text); font-weight: 500; }
+
+/* ── MISC ──────────────────────────────────────────── */
+.empty { text-align: center; padding: 48px 20px; color: var(--t3); }
+.empty-ico { font-size: 48px; margin-bottom: 12px; }
+.empty-txt { font-size: 13px; line-height: 1.8; }
+
+.slider-wrap { margin: 10px 0; }
+input[type=range] { width: 100%; -webkit-appearance: none; height: 3px; background: var(--s3); border-radius: 2px; outline: none; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: linear-gradient(135deg, var(--gold), var(--gold-lt)); cursor: pointer; box-shadow: 0 0 8px rgba(201,168,76,.3); }
+.slider-lbls { display: flex; justify-content: space-between; font-size: 10px; color: var(--t2); margin-top: 5px; }
+
+.toast {
+  position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+  background: var(--s3); border: 1px solid var(--border-gold);
+  border-radius: 99px; padding: 9px 20px; font-size: 12px;
+  z-index: 400; opacity: 0; transition: opacity .3s;
+  white-space: nowrap; pointer-events: none;
+  font-family: 'DM Sans', sans-serif;
+  box-shadow: 0 4px 20px rgba(0,0,0,.4);
+}
+.toast.show { opacity: 1; }
+
+hr.div { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+.mt8 { margin-top: 8px; } .mt12 { margin-top: 12px; } .mt16 { margin-top: 16px; }
+
+/* Stat player header */
+.stats-hero {
+  background: linear-gradient(135deg, var(--s2), var(--s3));
+  border: 1px solid var(--border-gold);
+  border-radius: var(--r); padding: 18px; text-align: center; margin-bottom: 18px;
+}
+.stats-hero-name { font-family: 'Oswald', sans-serif; font-size: 28px; font-weight: 700; letter-spacing: 2px; color: var(--gold-lt); }
+.stats-hero-team { font-size: 11px; color: var(--t2); margin-top: 3px; letter-spacing: 1px; text-transform: uppercase; }
+
+/* Divider label */
+.divider-label {
+  display: flex; align-items: center; gap: 10px; margin: 16px 0 12px;
+  font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--t2); font-weight: 600;
+}
+.divider-label::before, .divider-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+/* Balance meter */
+.balance-meter {
+  display: flex; gap: 3px; margin-top: 10px; height: 4px;
+}
+.balance-seg { flex: 1; border-radius: 2px; }
+
+/* ── RANKING FILTER BAR ────────────────────────────────── */
+.rank-filter-bar {
+  display: flex; flex-direction: column; gap: 8px;
+  background: var(--s1); border: 1px solid var(--border);
+  border-radius: var(--r); padding: 12px 14px; margin-bottom: 14px;
+}
+.rank-filter-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rank-filter-label {
+  font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase;
+  color: var(--t2); font-weight: 600; white-space: nowrap; min-width: 40px;
+}
+.rank-chip {
+  display: inline-flex; align-items: center;
+  background: var(--s3); border: 1px solid var(--border);
+  border-radius: 99px; padding: 4px 11px;
+  font-size: 11px; font-family: 'DM Sans', sans-serif;
+  cursor: pointer; transition: all .15s; color: var(--t2);
+  white-space: nowrap;
+}
+.rank-chip.sel { background: var(--gold-dim); border-color: var(--border-gold); color: var(--gold-lt); font-weight: 600; }
+.rank-dir {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--s3); border: 1px solid var(--border);
+  border-radius: 99px; padding: 4px 12px;
+  font-size: 11px; cursor: pointer; transition: all .15s; color: var(--t2);
+}
+.rank-dir.sel { background: var(--gold-dim); border-color: var(--border-gold); color: var(--gold-lt); font-weight: 600; }
+
+/* ── RANKING ROW ───────────────────────────────────────── */
+.rank-row { flex-direction: column; align-items: stretch; gap: 0; padding: 10px 13px; cursor: pointer; }
+.rank-row-top { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+.rank-name-col { flex: 1; min-width: 0; }
+.rank-stats-row {
+  display: flex; gap: 0;
+  border-top: 1px solid var(--border);
+  margin-top: 2px; padding-top: 7px;
+}
+.rank-stat {
+  flex: 1; text-align: center;
+  border-right: 1px solid var(--border);
+  padding: 0 2px;
+}
+.rank-stat:last-child { border-right: none; }
+.rank-stat.hl .rs-v { color: var(--gold-lt); }
+.rank-stat.hl .rs-l { color: var(--gold); }
+.rs-v {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px; font-weight: 600; color: var(--text);
+  white-space: nowrap;
+}
+.rs-l { font-size: 9px; color: var(--t2); margin-top: 2px; letter-spacing: .5px; }
+
+
+/* ── PELADA HIST CARD ──────────────────────────────────────── */
+.pelada-hist-card {
+  background: var(--s1);
+  border: 1px solid var(--border-gold);
+  border-radius: var(--r);
+  padding: 14px 16px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.pelada-hist-card:active { background: var(--gold-dim); }
+
+</style>
+</head>
+<body>
+
+<!-- SETUP FIREBASE -->
+<div id="setupScreen" style="display:none">
+  <div style="max-width:420px;margin:0 auto">
+    <img src="logo.jpg" style="width:70px;height:70px;border-radius:10px;border:1px solid var(--border-gold);margin-bottom:16px;display:block">
+    <div style="font-family:'Oswald',sans-serif;font-size:32px;font-weight:700;letter-spacing:3px;color:var(--gold-lt);margin-bottom:4px">SETUP FIREBASE</div>
+    <div style="font-size:12px;color:var(--t2);margin-bottom:24px">Configure uma vez — todos sincronizam automaticamente</div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="section-lbl">COMO CONFIGURAR</div>
+      <div style="font-size:12px;color:var(--t2);line-height:2.1">
+        1. <strong style="color:var(--text)">console.firebase.google.com</strong><br>
+        2. Crie um projeto gratuito<br>
+        3. <strong style="color:var(--text)">Project Settings → General → Your apps → &lt;/&gt;</strong><br>
+        4. Registre o app web e copie o <code style="color:var(--gold)">firebaseConfig</code><br>
+        5. Ative <strong style="color:var(--text)">Firestore Database</strong> em modo teste<br>
+        6. Cole os valores abaixo
+      </div>
+    </div>
+    <div class="field"><label>API Key</label><input class="input" id="cfg_apiKey" placeholder="AIzaSy..."></div>
+    <div class="field"><label>Auth Domain</label><input class="input" id="cfg_authDomain" placeholder="projeto.firebaseapp.com"></div>
+    <div class="field"><label>Project ID</label><input class="input" id="cfg_projectId" placeholder="meu-projeto-123"></div>
+    <div class="field"><label>Storage Bucket</label><input class="input" id="cfg_storageBucket" placeholder="projeto.appspot.com"></div>
+    <div class="field"><label>Messaging Sender ID</label><input class="input" id="cfg_messagingSenderId" placeholder="123456789012"></div>
+    <div class="field"><label>App ID</label><input class="input" id="cfg_appId" placeholder="1:123:web:abc..."></div>
+    <button class="btn btn-gold" onclick="salvarFirebaseConfig()">SALVAR E CONTINUAR</button>
+    <button class="btn btn-ghost mt8" onclick="usarSemFirebase()">USAR SEM FIREBASE (dados locais)</button>
+  </div>
+</div>
+
+<!-- LOGIN -->
+<div id="loginScreen" style="display:none">
+  <img src="logo.jpg" class="login-shield">
+  <div class="login-title">App do<br>Torneira</div>
+  <div class="login-tag">Cerveja · Cigarro · Futebol · Nessa Ordem</div>
+  <div class="login-card" id="loginCard">
+    <div class="field">
+      <label>Seu nome na pelada</label>
+      <input class="input" id="loginNome" placeholder="Como te chamam?" maxlength="25" onkeydown="if(event.key==='Enter')entrar()">
+    </div>
+    <button class="btn btn-gold" onclick="entrar()">ENTRAR ⚽</button>
+    <div style="font-size:11px;color:var(--t3);text-align:center;margin-top:12px">Jogadores cadastrados precisam de senha</div>
+  </div>
+</div>
+
+<!-- APP SHELL -->
+<div id="appShell" style="display:none;flex-direction:column;height:100%">
+  <header class="app-header">
+    <div class="logo-wrap">
+      <img src="logo.jpg" class="logo-shield">
+      <div class="logo-text">
+        <div class="logo-main">App do Torneira</div>
+        <div class="logo-sub">Cerveja · Cigarro · Futebol</div>
+      </div>
+    </div>
+    <div class="user-chip" id="hUserChip" onclick="openPerfilProprio()">
+      <div class="u-avatar" id="hAvatar">?</div>
+      <div class="u-name" id="hNome">—</div>
+      <div class="admin-pip" id="hAdminDot" style="display:none"></div>
+    </div>
+  </header>
+
+  <div class="app-body">
+    <!-- HOME -->
+    <div class="screen active" id="sc-home">
+      <div class="pg-header">
+        <div class="pg-title">Início <span>⚽</span></div>
+        <div class="pg-sub" id="homeSub">Carregando...</div>
+      </div>
+
+      <!-- Comunicados aparecem primeiro -->
+      <div id="homeComunicados"></div>
+
+      <!-- Lista de presença (some quando times sorteados) -->
+      <div id="homePresenca"></div>
+
+      <!-- Times sorteados (aparece só quando há sorteio confirmado) -->
+      <div id="homeMsg"></div>
+      <div id="homeStats"></div>
+
+      <!-- Botões de admin: aparecem DEPOIS da lista -->
+      <div id="homeAdminButtons" style="display:none;margin-top:8px">
+        <div id="btnComunicado" style="display:none;margin-bottom:8px">
+          <button class="btn btn-ghost" onclick="abrirNovoComunicado()" style="font-size:14px">
+            📢 NOVO COMUNICADO
+          </button>
+        </div>
+        <button class="btn btn-gold" id="btnSortear" onclick="startFlow()" style="margin-bottom:10px">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+          NOVO SORTEIO
+        </button>
+      </div>
+
+      <!-- Controles admin (cancelar/concluir) -->
+      <div id="homeAdminControls"></div>
+
+      <!-- Histórico -->
+      <div id="homePeladasHist"></div>
+
+    </div>
+
+    <!-- JOGADORES / ELENCO -->
+    <div class="screen" id="sc-jogadores">
+      <div class="pg-header">
+        <div class="pg-title">Elenco</div>
+        <div class="pg-sub" id="jogCount">—</div>
+      </div>
+      <div id="adminJogBtn" style="display:none;margin-bottom:10px">
+        <button class="btn btn-gold" onclick="openCadastro()">+ CADASTRAR JOGADOR</button>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:12px">
+        <span class="rank-chip sel" data-jf="todos"  onclick="setJogFiltro('todos')">Todos</span>
+        <span class="rank-chip"    data-jf="mensal"  onclick="setJogFiltro('mensal')">Mensalistas</span>
+        <span class="rank-chip"    data-jf="avulso"  onclick="setJogFiltro('avulso')">Avulsos</span>
+      </div>
+      <div id="jogList"></div>
+    </div>
+
+    <!-- CAIXA -->
+    <div class="screen" id="sc-financas">
+      <div class="pg-header">
+        <div class="pg-title">Caixa</div>
+        <div class="pg-sub">Mensalidades, avulsos e multas</div>
+      </div>
+      <div id="financasInner"></div>
+    </div>
+
+    <!-- RANKING -->
+    <div class="screen" id="sc-ranking">
+      <div class="pg-header">
+        <div class="pg-title">Ranking</div>
+        <div class="pg-sub">Ordenar e filtrar por estatística</div>
+      </div>
+
+      <!-- Filter bar -->
+      <div class="rank-filter-bar">
+        <div class="rank-filter-row">
+          <span class="rank-filter-label">Stat</span>
+          <span class="rank-chip sel" data-v="IF"       onclick="setRankStat('IF')">Rating</span>
+          <span class="rank-chip"     data-v="nota"     onclick="setRankStat('nota')">Nota</span>
+          <span class="rank-chip"     data-v="gols"     onclick="setRankStat('gols')">⚽ Gols</span>
+          <span class="rank-chip"     data-v="assists"  onclick="setRankStat('assists')">🎯 Assists</span>
+          <span class="rank-chip"     data-v="vitorias" onclick="setRankStat('vitorias')">🏆 Vit.</span>
+          <span class="rank-chip"     data-v="domingos" onclick="setRankStat('domingos')">Dom.</span>
+          <span class="rank-chip"     data-v="mvps"     onclick="setRankStat('mvps')">⭐ MVP</span>
+          <span class="rank-chip"     data-v="bm"       onclick="setRankStat('bm')">🎈 B.Murcha</span>
+        </div>
+        <div class="rank-filter-row">
+          <span class="rank-filter-label">Ordem</span>
+          <span class="rank-dir sel" data-v="desc" onclick="setRankDir('desc')">▼ Maior primeiro</span>
+          <span class="rank-dir"     data-v="asc"  onclick="setRankDir('asc')">▲ Menor primeiro</span>
+        </div>
+      </div>
+
+      <div id="rankList"></div>
+    </div>
+
+    <!-- OPCOES -->
+    <div class="screen" id="sc-opcoes">
+      <div class="pg-header">
+        <div class="pg-title">Opções</div>
+        <div class="pg-sub">Configurações da pelada</div>
+      </div>
+      <div class="card" style="border-color:var(--border-gold)">
+        <div class="section-lbl">REGULAMENTO</div>
+        <button class="btn btn-ghost" onclick="openModal('modalRegras')">📋 VER REGRAS DA PELADA</button>
+      </div>
+      <div class="card">
+        <div class="section-lbl">ALEATORIEDADE DO SORTEIO</div>
+        <div class="slider-wrap" id="sliderWrap">
+          <input type="range" min="0" max="25" value="15" id="sliderAlea" oninput="updateAlea()">
+          <div class="slider-lbls"><span>Equilibrado</span><span id="aleaVal" style="color:var(--gold)">15%</span><span>Aleatório</span></div>
+        </div>
+        <div id="sliderLocked" style="display:none;background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;display:none">
+          <div style="font-size:12px;color:var(--t2)">Aleatoriedade atual</div>
+          <div id="sliderLockedVal" style="font-family:'JetBrains Mono',monospace;font-size:20px;color:var(--gold);margin-top:4px">15%</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="section-lbl">RESTRIÇÕES</div>
+        <div id="adminRestBtn" style="display:none;margin-bottom:10px">
+          <button class="btn btn-ghost" onclick="openModal('modalRest')">GERENCIAR RESTRIÇÕES</button>
+        </div>
+        <div id="restList"></div>
+      </div>
+      <div class="card" id="adminCard" style="display:none">
+        <div id="adminToolsOpcoes">
+          <div class="section-lbl">ADMINISTRAÇÃO</div>
+          <button class="btn btn-ghost" style="margin-bottom:8px" onclick="openModal('modalAdmin')">GERENCIAR ADMINS</button>
+          <button class="btn btn-ghost" style="margin-bottom:8px" onclick="exportarExcel()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            EXPORTAR EXCEL
+          </button>
+          
+          <button class="btn btn-danger" onclick="confirmReset()">RESETAR TODOS OS DADOS</button>
+        </div>
+      </div>
+    </div>
+  </div><!-- app-body -->
+
+  <nav class="app-nav">
+    <button class="nav-btn active" id="nav-home" onclick="goTo('home')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>INÍCIO
+    </button>
+    <button class="nav-btn" id="nav-jogadores" onclick="goTo('jogadores')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>ELENCO
+    </button>
+    <button class="nav-btn" id="nav-ranking" onclick="goTo('ranking')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>RANKING
+    </button>
+    <button class="nav-btn" id="nav-financas" onclick="goTo('financas')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>CAIXA
+    </button>
+    <button class="nav-btn" id="nav-opcoes" onclick="goTo('opcoes')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>OPÇÕES
+    </button>
+  </nav>
+</div>
+
+<!-- FLOW -->
+<div id="flow">
+  <div class="flow-inner">
+    <div class="flow-hdr">
+      <button class="back-btn" onclick="closeFlow()">← Voltar</button>
+      <div class="flow-ttl" id="flowTitle">SORTEAR</div>
+    </div>
+    <div id="flowContent"></div>
+  </div>
+</div>
+
+<!-- MODALS -->
+<div class="overlay" id="modalCadastro">
+  <div class="modal">
+    <div class="m-handle"></div>
+    <div class="m-title" id="cadastroTitle">CADASTRAR JOGADOR</div>
+    <div class="m-sub">Nome e nota opinativa</div>
+    <div class="field"><label>Nome</label><input class="input" id="inpNome" placeholder="Ex: Matias" maxlength="30"></div>
+    <div class="field"><label>Nota Opinativa (0.0 – 10.0)</label><input class="input" id="inpNota" type="number" min="0" max="10" step="0.1" placeholder="7.5"></div>
+    <div class="field"><label>Tipo de Jogador</label>
+      <select class="input" id="inpTipo">
+        <option value="avulso">Avulso (por pelada)</option>
+        <option value="mensalista">Mensalista (mensal)</option>
+      </select>
+    </div>
+    <div class="field"><label>Clube do Coração</label>
+      <select class="input" id="inpClube">
+        <option value="">— Não informado —</option>
+        <option value="atleticano">Atleticano 🐓</option>
+        <option value="cruzeirense">Cruzeirense 🦊</option>
+      </select>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:14px">
+      <input type="checkbox" id="inpGoleiro" style="width:18px;height:18px;accent-color:var(--gold);cursor:pointer">
+      <label for="inpGoleiro" style="font-size:13px;cursor:pointer">🧤 Goleiro</label>
+    </div>
+    <input type="hidden" id="editId">
+    <button class="btn btn-gold" onclick="salvarJogador()">SALVAR</button>
+    <button class="btn btn-ghost mt8" onclick="closeModal('modalCadastro')">CANCELAR</button>
+  </div>
+</div>
+
+<div class="overlay" id="modalPerfil">
+  <div class="modal">
+    <div class="m-handle"></div>
+    <div id="perfilBody"></div>
+    <button class="btn btn-ghost mt8" onclick="closeModal('modalPerfil')">FECHAR</button>
+  </div>
+</div>
+
+<div class="overlay" id="modalRest">
+  <div class="modal">
+    <div class="m-handle"></div>
+    <div class="m-title">RESTRIÇÕES</div>
+    <div class="m-sub">Pares de jogadores com regras especiais</div>
+    <div class="field"><label>Tipo</label>
+      <div><span class="chip sel" id="chipN" onclick="setRT('nunca')">🚫 Nunca juntos</span><span class="chip" id="chipS" onclick="setRT('sempre')">🤝 Sempre juntos</span></div>
+    </div>
+    <div class="field"><label>Duração</label>
+      <div><span class="chip sel" id="chipP" onclick="setRD('permanente')">Permanente</span><span class="chip" id="chipD" onclick="setRD('domingo')">Este domingo</span></div>
+    </div>
+    <div class="field"><label>Jogador 1</label><select class="input" id="rP1"></select></div>
+    <div class="field"><label>Jogador 2</label><select class="input" id="rP2"></select></div>
+    <button class="btn btn-gold" onclick="addRestricao()">ADICIONAR</button>
+    <hr class="div">
+    <div id="restModalList"></div>
+    <button class="btn btn-ghost mt8" onclick="closeModal('modalRest')">FECHAR</button>
+  </div>
+</div>
+
+<div class="overlay" id="modalAdmin">
+  <div class="modal">
+    <div class="m-handle"></div>
+    <div class="m-title">ADMINS</div>
+    <div class="m-sub">Quem pode inserir dados na pelada</div>
+    <div id="adminList"></div>
+    <button class="btn btn-ghost mt8" onclick="closeModal('modalAdmin')">FECHAR</button>
+  </div>
+</div>
+
+
+<div class="overlay" id="modalEditDomingo">
+  <div class="modal">
+    <div class="m-handle"></div>
+    <div class="m-title" id="editDomingoTitle">EDITAR DOMINGO</div>
+    <div class="m-sub">Ajuste as estatísticas deste domingo</div>
+    <div class="field"><label>Data (dd/mm/aaaa)</label><input class="input" id="editDomingoData" placeholder="25/04/2026"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px">
+      <div class="field" style="margin:0"><label>⚽ Gols</label><input class="input" id="editDomingoGols" type="number" min="0" value="0"></div>
+      <div class="field" style="margin:0"><label>🎯 Assists</label><input class="input" id="editDomingoAssists" type="number" min="0" value="0"></div>
+      <div class="field" style="margin:0"><label>🏆 Vitórias</label><input class="input" id="editDomingoVitorias" type="number" min="0" value="0"></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:16px">
+      <input type="checkbox" id="editDomingoAusente" style="width:18px;height:18px;accent-color:var(--gold);cursor:pointer">
+      <label for="editDomingoAusente" style="font-size:13px;cursor:pointer">Marcar como falta (conta o domingo, sem stats)</label>
+    </div>
+    <button class="btn btn-gold" onclick="salvarEditDomingo()">SALVAR</button>
+    <button class="btn btn-ghost mt8" onclick="closeModal('modalEditDomingo')">CANCELAR</button>
+  </div>
+</div>
+
+
+<div class="overlay" id="modalDataSorteio">
+  <div class="modal">
+    <div class="m-handle"></div>
+    <div class="m-title">DATA DA PELADA</div>
+    <div class="m-sub">Informe a data deste domingo</div>
+    <div class="field">
+      <label>Data (dd/mm/aaaa)</label>
+      <input class="input" id="inputDataSorteio" placeholder="25/05/2025" maxlength="10" onkeydown="if(event.key==='Enter')confirmarDataSorteio()">
+    </div>
+    <div id="dataSorteioInfo" style="font-size:12px;margin-bottom:10px;text-align:center;color:var(--t2)"></div>
+    <button class="btn btn-gold" onclick="confirmarDataSorteio()">SORTEAR ⚽</button>
+    <button class="btn btn-ghost mt8" onclick="closeModal('modalDataSorteio')">CANCELAR</button>
+  </div>
+</div>
+
+<div class="overlay" id="modalPeladaDetalhe">
+  <div class="modal">
+    <div class="m-handle"></div>
+    <div class="m-title" id="peladaDetalheTitle">PELADA</div>
+    <div id="peladaDetalheMvp"></div>
+    <div class="section-lbl">ESTATÍSTICAS DO DIA</div>
+    <div id="peladaDetalheList"></div>
+    <button id="btnExcluirPelada" style="display:none;width:100%;margin-top:8px;padding:10px;background:rgba(255,68,68,.1);border:1px solid rgba(255,68,68,.25);border-radius:10px;color:#ef4444;font-family:'Oswald',sans-serif;font-size:14px;letter-spacing:1px;cursor:pointer">🗑️ EXCLUIR PELADA</button>
+    <button class="btn btn-ghost mt8" onclick="closeModal('modalPeladaDetalhe')">FECHAR</button>
+  </div>
+</div>
+
+<div class="overlay" id="modalEditTimes">
+  <div class="modal">
+    <div class="mhandle"></div>
+    <div class="m-title">EDITAR TIMES</div>
+    <div class="m-sub">Troque jogadores entre os times</div>
+    <div id="editTimesContent"></div>
+    <button class="btn btn-gold" onclick="salvarEdicaoTimes()">SALVAR TIMES</button>
+    <button class="btn btn-ghost mt8" onclick="closeModal('modalEditTimes')">CANCELAR</button>
+  </div>
+</div>
+
+<div class="overlay" id="modalRegras">
+  <div class="modal">
+    <div class="mhandle"></div>
+    <div class="m-title">REGULAMENTO</div>
+    <div class="m-sub">App do Torneira</div>
+    <div id="modalRegrasBody"><!-- rendered by renderRegras() --></div>
+    <button class="btn btn-ghost mt8" onclick="closeModal('modalRegras')">FECHAR</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script type="module" src="app.js?v=1777455283"></script>
+<!-- Input permanente para upload de foto — necessário para PWA mobile -->
+<input type="file" id="fotoInputGlobal" accept="image/*" style="position:fixed;top:-9999px;left:-9999px;opacity:0;pointer-events:none">
+</body>
+</html>
