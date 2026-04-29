@@ -2716,7 +2716,7 @@ function openPerfil(id) {
   document.getElementById('perfilBody').innerHTML=`
     <div style="text-align:center;margin-bottom:14px">
       ${fotoHTML}
-      ${canEditPhoto ? `<label for="fotoInputGlobal" onclick="window._fotoUploadTarget='${j.id}'" style="display:inline-block;background:var(--s2);border:1px solid var(--border-gold);border-radius:99px;color:var(--gold);font-size:11px;padding:5px 14px;cursor:pointer;font-family:'DM Sans',sans-serif">📷 ${j.foto ? 'Trocar foto' : 'Adicionar foto'}</label>` : ''}
+      ${canEditPhoto ? `<button onclick="abrirUploadFoto('${j.id}')" style="display:inline-block;background:var(--s2);border:1px solid var(--border-gold);border-radius:99px;color:var(--gold);font-size:11px;padding:5px 14px;cursor:pointer;font-family:'DM Sans',sans-serif">📷 ${j.foto ? 'Trocar foto' : 'Adicionar foto'}</button>` : ''}
     </div>
     <div class="m-title" style="text-align:center">${j.nome}</div>
     <div class="m-sub" style="text-align:center">Nota opinativa: ${j.nota?.toFixed(1)}</div>
@@ -2772,7 +2772,7 @@ function openPerfilProprio() {
     </div>
     <button onclick="document.getElementById('userFloatMenu')?.remove();openPerfil('${currentUser.id}')" style="width:100%;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 10px;text-align:left;cursor:pointer;border-radius:8px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background='var(--s2)'" onmouseout="this.style.background='none'">👤 Ver perfil</button>
     ${!currentUser.isGuest ? `
-    <label for="fotoInputGlobal" onclick="document.getElementById('userFloatMenu')?.remove();window._fotoUploadTarget='${currentUser.id}'" style="width:100%;display:flex;align-items:center;gap:8px;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 10px;text-align:left;cursor:pointer;border-radius:8px;box-sizing:border-box">📷 Alterar foto</label>
+    <button onclick="document.getElementById('userFloatMenu')?.remove();abrirUploadFoto('${currentUser.id}')" style="width:100%;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 10px;text-align:left;cursor:pointer;border-radius:8px;display:flex;align-items:center;gap:8px">📷 Alterar foto</button>
     <button onclick="document.getElementById('userFloatMenu')?.remove();abrirMudarSenha()" style="width:100%;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 10px;text-align:left;cursor:pointer;border-radius:8px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background='var(--s2)'" onmouseout="this.style.background='none'">🔑 Mudar senha</button>` : ''}
     <div style="border-top:1px solid var(--border);margin:6px 0"></div>
     <button onclick="document.getElementById('userFloatMenu')?.remove();sairDaConta()" style="width:100%;background:none;border:none;color:var(--red);font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 10px;text-align:left;cursor:pointer;border-radius:8px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background='rgba(255,68,68,.08)'" onmouseout="this.style.background='none'">🚪 Sair da conta</button>
@@ -3082,13 +3082,48 @@ function abrirUploadFoto(jogadorId) {
 
   document.getElementById('userFloatMenu')?.remove();
 
-  // Salva o alvo de forma síncrona antes do click
-  _fotoUploadTarget = targetId;
+  // Cria input temporário a cada chamada — garante gesto direto do usuário
+  // no mobile (abre galeria) e no desktop (abre explorador de arquivos)
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = 'image/*';
+  inp.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0;pointer-events:none';
+  document.body.appendChild(inp);
 
-  // Usa o input permanente do DOM (evita bloqueio mobile com createElement)
-  const inp = document.getElementById('fotoInputGlobal');
-  if (!inp) { showToast('Erro ao abrir câmera'); return; }
-  inp.value = '';
+  inp.addEventListener('change', async () => {
+    const file = inp.files[0];
+    inp.remove();
+    if (!file) return;
+    const jTarget = appData.jogadores.find(x => x.id === targetId);
+    if (!jTarget) return;
+    if (file.size > 15 * 1024 * 1024) { showToast('Foto muito grande (máx 15MB)'); return; }
+    showToast('Processando foto...');
+    try {
+      const base64 = await new Promise((res, rej) => {
+        const reader = new FileReader();
+        reader.onload = e => res(e.target.result);
+        reader.onerror = rej;
+        reader.readAsDataURL(file);
+      });
+      const resized = await resizeImage(base64, 400);
+      jTarget.foto = resized;
+      await firestoreSet('jogadores', targetId, jTarget);
+      if (currentUser?.id === targetId) {
+        currentUser.foto = resized;
+        localStorage.setItem(LS_USER, JSON.stringify(currentUser));
+        const hAvatar = document.getElementById('hAvatar');
+        if (hAvatar) hAvatar.innerHTML = `<img src="${resized}" style="width:100%;height:100%;border-radius:50%;object-fit:cover">`;
+      }
+      saveLocal();
+      showToast('✅ Foto atualizada!');
+      if (curScreen === 'jogadores') renderJogs();
+      else openPerfil(targetId);
+    } catch(err) {
+      console.error('Erro foto:', err);
+      showToast('Erro ao salvar. Tente novamente.');
+    }
+  });
+
   inp.click(); // última instrução — sem nada async antes
 }
 
