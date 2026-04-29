@@ -1048,36 +1048,33 @@ function renderPresenca() {
         <button onclick="exportarListaPresenca()" style="background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--t2);font-size:11px;padding:4px 10px;cursor:pointer;font-family:'DM Sans',sans-serif">📋 Exportar</button>
         ${isAdminUser ? `<button onclick="abrirListaPresenca()" style="display:${!appData.presenca?'block':'none'};background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--t2);font-size:11px;padding:4px 10px;cursor:pointer">+ Abrir</button><button onclick="abrirAdminPresenca()" style="background:var(--gold-dim);border:1px solid var(--border-gold);border-radius:8px;color:var(--gold);font-size:11px;padding:4px 12px;cursor:pointer">⚙️ Gerenciar</button>` : ''}
       </div>
-      </div>` : ''}
     </div>
     <div class="card shield-card" style="margin-bottom:12px">
       <div style="white-space:pre-line;font-size:13px;color:var(--text);line-height:1.7;margin-bottom:14px;font-weight:500">${nomePelada} ${dataExibir}
 ${localAtual}
 ${horarioAtual}
 Pix: mfnassif16@gmail.com</div>
-      ${confirmadosNomes.length > 0 ? `
-      <div style="margin-bottom:10px">
-        ${tipoPresenca === 'classico' ? (() => {
-          const galos = confirmadosNomes.filter(p => p.clube === 'atleticano');
-          const raposas = confirmadosNomes.filter(p => p.clube === 'cruzeirense');
-          const semClube = confirmadosNomes.filter(p => !p.clube || (p.clube !== 'atleticano' && p.clube !== 'cruzeirense'));
-          const renderJog = (p, i) => `
-            <div style="font-size:13px;padding:2px 0;color:${p.id===userId?'var(--gold)':'var(--text)'};display:flex;align-items:center;gap:6px">
-              <span style="color:var(--t2);min-width:18px">${i+1}.</span>
-              <span>${p.nome}${p.mensalista?'<span style="font-size:9px;color:var(--gold);margin-left:4px">M</span>':''}</span>
-              ${p.id===userId?'<span style="font-size:9px;color:var(--gold)">← você</span>':''}
-            </div>`;
-          return `
-            ${galos.length > 0 ? `<div style="font-size:10px;letter-spacing:1px;color:var(--t2);margin:8px 0 4px;font-family:'Oswald',sans-serif">🐓 GALO (${galos.length})</div>${galos.map(renderJog).join('')}` : ''}
-            ${raposas.length > 0 ? `<div style="font-size:10px;letter-spacing:1px;color:var(--t2);margin:8px 0 4px;font-family:'Oswald',sans-serif">🦊 CRUZEIRO (${raposas.length})</div>${raposas.map(renderJog).join('')}` : ''}
-            ${semClube.length > 0 ? `<div style="font-size:10px;letter-spacing:1px;color:var(--t3);margin:8px 0 4px">SEM CLUBE (${semClube.length})</div>${semClube.map(renderJog).join('')}` : ''}`;
-        })() : confirmadosNomes.map((p,i) => `
-          <div style="font-size:13px;padding:3px 0;color:${p.id===userId?'var(--gold)':'var(--text)'};display:flex;align-items:center;gap:6px">
-            <span style="color:var(--t2);min-width:18px">${i+1}.</span>
-            <span>${p.nome}${p.mensalista?'<span style="font-size:9px;color:var(--gold);margin-left:4px">M</span>':''}</span>
-            ${p.id===userId?'<span style="font-size:9px;color:var(--gold)">← você</span>':''}
-          </div>`).join('')}
-      </div>` : `<div style="font-size:12px;color:var(--t3);margin-bottom:10px">Nenhuma confirmação ainda</div>`}
+      ${(() => {
+        if (!confirmadosNomes.length) return '<div style="font-size:12px;color:var(--t3);margin-bottom:10px">Nenhuma confirmação ainda</div>';
+        const rowJog = (p, i) =>
+          '<div style="font-size:13px;padding:3px 0;color:' + (p.id===userId?'var(--gold)':'var(--text)') + ';display:flex;align-items:center;gap:6px">' +
+          '<span style="color:var(--t2);min-width:18px">' + (i+1) + '.</span>' +
+          '<span>' + p.nome + (p.mensalista ? '<span style="font-size:9px;color:var(--gold);margin-left:4px">M</span>' : '') + '</span>' +
+          (p.id===userId ? '<span style="font-size:9px;color:var(--gold)">← você</span>' : '') +
+          '</div>';
+        if (tipoPresenca !== 'classico') {
+          return '<div style="margin-bottom:10px">' + confirmadosNomes.map(rowJog).join('') + '</div>';
+        }
+        const galos = confirmadosNomes.filter(p => p.clube === 'atleticano');
+        const raposas = confirmadosNomes.filter(p => p.clube === 'cruzeirense');
+        const semClube = confirmadosNomes.filter(p => !p.clube || (p.clube !== 'atleticano' && p.clube !== 'cruzeirense'));
+        const secTitle = (label, n) => '<div style="font-size:10px;letter-spacing:1px;color:var(--t2);margin:8px 0 4px;font-family:Oswald,sans-serif">' + label + ' (' + n + ')</div>';
+        return '<div style="margin-bottom:10px">' +
+          (galos.length ? secTitle('🐓 GALO', galos.length) + galos.map(rowJog).join('') : '') +
+          (raposas.length ? secTitle('🦊 CRUZEIRO', raposas.length) + raposas.map(rowJog).join('') : '') +
+          (semClube.length ? secTitle('SEM CLUBE', semClube.length) + semClube.map(rowJog).join('') : '') +
+          '</div>';
+      })()}
       ${esperaNomes.length > 0 ? `
       <div style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px">
         <div style="font-size:10px;letter-spacing:1px;color:var(--t2);margin-bottom:6px">LISTA DE ESPERA</div>
