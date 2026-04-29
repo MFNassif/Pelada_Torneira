@@ -893,7 +893,7 @@ async function removerComunicado(id) {
 // ─── PRESENÇA ─────────────────────────────────────────────────
 function getDescricaoPelada(horario) {
   const domingo = getProximoDomingo();
-  return `App do Torneiro — ${domingo}
+  return `Pelada do Torneira ${domingo}
 R. Juscelino Barbosa 254
 ${horario || '11:30 às 13:00'}
 Pix: mfnassif16@gmail.com`;
@@ -987,7 +987,7 @@ function renderPresenca() {
   const esperaCheia = espera.length >= esperaMax;
 
   // Nomes ordenados alfabeticamente
-  const tipoPresenca = presenca.tipo || 'normal'; // 'classico' or 'normal'
+  const tipoPresenca = presenca.tipo || (presenca.tipoPelada === 'classico' ? 'classico' : 'normal');
   const confirmadosNomes = confirmados.map(id => {
     const j = appData.jogadores.find(x => x.id === id);
     return { id, nome: j?.nome || id, mensalista: jogadorMensalista(id), clube: j?.clube || '' };
@@ -1057,10 +1057,24 @@ ${horarioAtual}
 Pix: mfnassif16@gmail.com</div>
       ${confirmadosNomes.length > 0 ? `
       <div style="margin-bottom:10px">
-        ${confirmadosNomes.map((p,i) => `
+        ${tipoPresenca === 'classico' ? (() => {
+          const galos = confirmadosNomes.filter(p => p.clube === 'atleticano');
+          const raposas = confirmadosNomes.filter(p => p.clube === 'cruzeirense');
+          const semClube = confirmadosNomes.filter(p => !p.clube || (p.clube !== 'atleticano' && p.clube !== 'cruzeirense'));
+          const renderJog = (p, i) => `
+            <div style="font-size:13px;padding:2px 0;color:${p.id===userId?'var(--gold)':'var(--text)'};display:flex;align-items:center;gap:6px">
+              <span style="color:var(--t2);min-width:18px">${i+1}.</span>
+              <span>${p.nome}${p.mensalista?'<span style="font-size:9px;color:var(--gold);margin-left:4px">M</span>':''}</span>
+              ${p.id===userId?'<span style="font-size:9px;color:var(--gold)">← você</span>':''}
+            </div>`;
+          return `
+            ${galos.length > 0 ? `<div style="font-size:10px;letter-spacing:1px;color:var(--t2);margin:8px 0 4px;font-family:'Oswald',sans-serif">🐓 GALO (${galos.length})</div>${galos.map(renderJog).join('')}` : ''}
+            ${raposas.length > 0 ? `<div style="font-size:10px;letter-spacing:1px;color:var(--t2);margin:8px 0 4px;font-family:'Oswald',sans-serif">🦊 CRUZEIRO (${raposas.length})</div>${raposas.map(renderJog).join('')}` : ''}
+            ${semClube.length > 0 ? `<div style="font-size:10px;letter-spacing:1px;color:var(--t3);margin:8px 0 4px">SEM CLUBE (${semClube.length})</div>${semClube.map(renderJog).join('')}` : ''}`;
+        })() : confirmadosNomes.map((p,i) => `
           <div style="font-size:13px;padding:3px 0;color:${p.id===userId?'var(--gold)':'var(--text)'};display:flex;align-items:center;gap:6px">
             <span style="color:var(--t2);min-width:18px">${i+1}.</span>
-            <span>${p.nome}${p.mensalista?'<span style="font-size:9px;color:var(--gold);margin-left:4px">M</span>':''}${tipoPresenca==='classico'&&p.clube?'<span style="font-size:9px;margin-left:4px;color:'+(p.clube==='atleticano'?'#888':'#3b82f6')+'">'+(p.clube==='atleticano'?'🐓':'🦊')+'</span>':''}</span>
+            <span>${p.nome}${p.mensalista?'<span style="font-size:9px;color:var(--gold);margin-left:4px">M</span>':''}</span>
             ${p.id===userId?'<span style="font-size:9px;color:var(--gold)">← você</span>':''}
           </div>`).join('')}
       </div>` : `<div style="font-size:12px;color:var(--t3);margin-bottom:10px">Nenhuma confirmação ainda</div>`}
@@ -1239,7 +1253,7 @@ async function abrirListaPresenca() {
 }
 function exportarListaPresenca() {
   const presenca = appData.presenca || { confirmados:[], espera:[], data:'', tipo:'normal' };
-  const tipo = presenca.tipo || 'normal';
+  const tipo = presenca.tipo || (presenca.tipoPelada === 'classico' ? 'classico' : 'normal');
   const data = presenca.data || getProximoDomingo();
   const local = presenca.local || 'R. Juscelino Barbosa 254';
   const total = (presenca.confirmados||[]).length;
@@ -1569,13 +1583,15 @@ async function setTipoPresenca(tipo) {
   if (!appData.presenca) {
     appData.presenca = { confirmados:[], espera:[], data: appData.ultimoSorteio?.data || getProximoDomingo() };
   }
+  // Save to BOTH fields for compatibility
   appData.presenca.tipo = tipo;
+  appData.presenca.tipoPelada = tipo === 'classico' ? 'classico' : 'comum';
   await firestoreSet('config', 'presenca', appData.presenca);
   saveLocal();
   renderPresenca();
   document.getElementById('modalAdminPresenca')?.remove();
   abrirAdminPresenca();
-  showToast(tipo === 'classico' ? '⚽ Clássico ativado' : 'Pelada normal');
+  showToast(tipo === 'classico' ? '🐓🦊 Clássico ativado' : '⚽ Pelada normal');
 }
 window.setTipoPresenca = setTipoPresenca;
 
