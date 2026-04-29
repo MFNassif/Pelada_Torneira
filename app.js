@@ -1066,7 +1066,7 @@ function renderPresenca() {
         ${tipoPresenca==='classico'?'<span style="font-size:9px;background:rgba(201,168,76,.15);border:1px solid var(--border-gold);color:var(--gold);padding:2px 8px;border-radius:99px;font-family:Oswald,sans-serif;letter-spacing:1px">CLÁSSICO ⚽</span>':''}
       </div>
       <div style="display:flex;gap:6px;align-items:center">
-        <button onclick="exportarListaPresenca()" style="background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--t2);font-size:11px;padding:4px 10px;cursor:pointer;font-family:'DM Sans',sans-serif">📋 Exportar</button>
+        ${isAdminUser ? `<button onclick="exportarListaPresenca()" style="background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--t2);font-size:11px;padding:4px 10px;cursor:pointer;font-family:'DM Sans',sans-serif">📋 Exportar</button>` : ''}
         ${isAdminUser ? `<button onclick="abrirListaPresenca()" style="display:${!appData.presenca?'block':'none'};background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--t2);font-size:11px;padding:4px 10px;cursor:pointer">+ Abrir</button><button onclick="abrirAdminPresenca()" style="background:var(--gold-dim);border:1px solid var(--border-gold);border-radius:8px;color:var(--gold);font-size:11px;padding:4px 12px;cursor:pointer">⚙️ Gerenciar</button>` : ''}
       </div>
     </div>
@@ -1423,11 +1423,6 @@ function abrirAdminPresenca() {
         🧤 Se 2+ goleiros confirmados, o sistema usa 1 jogador a menos por time automaticamente
       </div>
 
-      <div class="section-lbl" style="margin-bottom:8px">TIPO DE PELADA</div>
-      <div style="display:flex;gap:8px;margin-bottom:14px">
-        <button onclick="setTipoPresenca('normal')" style="flex:1;padding:8px;border-radius:8px;border:1px solid ${presenca.tipo==='classico'?'var(--border)':'var(--border-gold)'};background:${presenca.tipo==='classico'?'var(--s2)':'var(--gold-dim)'};color:${presenca.tipo==='classico'?'var(--t2)':'var(--gold)'};cursor:pointer;font-family:'Oswald',sans-serif;font-size:12px;letter-spacing:1px">NORMAL</button>
-        <button onclick="setTipoPresenca('classico')" style="flex:1;padding:8px;border-radius:8px;border:1px solid ${presenca.tipo==='classico'?'var(--border-gold)':'var(--border)'};background:${presenca.tipo==='classico'?'var(--gold-dim)':'var(--s2)'};color:${presenca.tipo==='classico'?'var(--gold)':'var(--t2)'};cursor:pointer;font-family:'Oswald',sans-serif;font-size:12px;letter-spacing:1px">⚽ CLÁSSICO</button>
-      </div>
       <div class="section-lbl" style="margin-bottom:8px">LOCAL E HORÁRIO</div>
       <div class="field"><label>Endereço</label>
         <input class="input" id="apLocal" value="R. Juscelino Barbosa 254" maxlength="60">
@@ -4612,6 +4607,7 @@ function abrirEditarDebitos(jogadorId) {
   const j = appData.jogadores.find(x=>x.id===jogadorId);
   const fin = getFinancasJogador(jogadorId);
   const debitos = fin.debitos || [];
+  const debitosPendentes = debitos.map((d,i) => ({...d, _idx: i})).filter(d => !d.quitado);
   const overlay = document.createElement('div');
   overlay.className = 'overlay open';
   overlay.id = 'modalEditDebitos';
@@ -4621,14 +4617,14 @@ function abrirEditarDebitos(jogadorId) {
       <div class="m-title">DÉBITOS</div>
       <div class="m-sub">${j?.nome}</div>
       <div id="editDebitosLista">
-        ${debitos.length === 0 ? '<div style="color:var(--t3);text-align:center;padding:16px">Nenhum débito</div>' :
-          debitos.map((d,i) => `
+        ${debitosPendentes.length === 0 ? '<div style="color:var(--t3);text-align:center;padding:16px">Nenhum débito pendente</div>' :
+          debitosPendentes.map(d => `
           <div style="background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:6px;display:flex;align-items:center;gap:8px">
             <div style="flex:1">
               <div style="font-size:12px;font-weight:500">${d.descricao || d.tipo}</div>
               <div style="font-size:11px;color:var(--t2)">${d.data} · R$${d.valor}</div>
             </div>
-            <button onclick="removerDebitoIdx('${jogadorId}',${i})" style="background:rgba(255,68,68,.1);border:1px solid rgba(255,68,68,.2);border-radius:6px;color:var(--red);padding:4px 10px;cursor:pointer;font-size:12px">Remover</button>
+            <button onclick="removerDebitoIdx('${jogadorId}',${d._idx})" style="background:rgba(255,68,68,.1);border:1px solid rgba(255,68,68,.2);border-radius:6px;color:var(--red);padding:4px 10px;cursor:pointer;font-size:12px">Remover</button>
           </div>`).join('')}
       </div>
       <div class="section-lbl" style="margin-top:14px;margin-bottom:8px">PAGAMENTOS</div>
