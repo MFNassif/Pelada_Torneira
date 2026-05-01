@@ -80,7 +80,6 @@ window.addEventListener('DOMContentLoaded', boot);
 async function boot() {
   useFirebase = true;
   initFB(FIREBASE_CONFIG);
-  initFotoInput(); // registra handler do input permanente de foto
   await loadData();
   const su = localStorage.getItem(LS_USER);
   if (!su) { showLogin(true); voltarLogin(); return; }
@@ -579,10 +578,6 @@ async function adicionarDebitoComData(jogadorId, tipo, valor, descricao, data) {
   saveLocal();
 }
 
-async function darBaixa(jogadorId, valor, descricao) {
-  return darBaixaComData(jogadorId, valor, descricao, new Date().toLocaleDateString('pt-BR'));
-}
-
 async function darBaixaComData(jogadorId, valor, descricao, data) {
   const fin = getFinancasJogador(jogadorId);
   if (!fin.pagamentos) fin.pagamentos = [];
@@ -1028,7 +1023,7 @@ function renderPresenca() {
 
   // Regra de vagas dinâmica baseada no tamanho de time
   const vagas = getVagasLimite(confirmados, espera);
-  const esperaMax = getEsperaLimite(confirmados);
+  const esperaMax = getEsperaLimite(confirmados, espera);
   const n = getTamanhoTime(confirmados);
   // Duração e horário: convencional=2h só com 4 times, clássico=sempre 2h
   const tipoPresencaRender = presenca.tipo || (presenca.tipoPelada === 'classico' ? 'classico' : 'normal');
@@ -3177,49 +3172,6 @@ async function executarRemoverDomingo(jogadorId, idx, modo) {
 
 
 // ─── FOTO DE PERFIL ──────────────────────────────────────────
-// Target do upload atual (síncrono, salvo antes do .click())
-let _fotoUploadTarget = null;
-
-// Inicializa o handler do input permanente (chamado uma vez no boot)
-function initFotoInput() {
-  const inp = document.getElementById('fotoInputGlobal');
-  if (!inp) return;
-  inp.addEventListener('change', async () => {
-    const file = inp.files[0];
-    inp.value = ''; // reset para permitir reescolha da mesma foto
-    const targetId = _fotoUploadTarget;
-    _fotoUploadTarget = null;
-    if (!file || !targetId) return;
-    const j = appData.jogadores.find(x => x.id === targetId);
-    if (!j) return;
-    if (file.size > 15 * 1024 * 1024) { showToast('Foto muito grande (máx 15MB)'); return; }
-    showToast('Processando foto...');
-    try {
-      const base64 = await new Promise((res, rej) => {
-        const reader = new FileReader();
-        reader.onload = e => res(e.target.result);
-        reader.onerror = rej;
-        reader.readAsDataURL(file);
-      });
-      const resized = await resizeImage(base64, 400);
-      j.foto = resized;
-      await firestoreSet('jogadores', targetId, j);
-      if (currentUser?.id === targetId) {
-        currentUser.foto = resized;
-        localStorage.setItem(LS_USER, JSON.stringify(currentUser));
-        const hAvatar = document.getElementById('hAvatar');
-        if (hAvatar) hAvatar.innerHTML = `<img src="${resized}" style="width:100%;height:100%;border-radius:50%;object-fit:cover">`;
-      }
-      saveLocal();
-      showToast('✅ Foto atualizada!');
-      if (curScreen === 'jogadores') renderJogs();
-      else openPerfil(targetId);
-    } catch(err) {
-      console.error('Erro foto:', err);
-      showToast('Erro ao salvar. Tente novamente.');
-    }
-  });
-}
 
 function abrirUploadFoto(jogadorId) {
   // ⚠️ SÍNCRONO: nenhum await antes do .click() — exigência do mobile
@@ -5231,8 +5183,3 @@ window.salvarEditDomingo=salvarEditDomingo;
 window.setJogFiltro=setJogFiltro;
 window.getCaixaMesKey=getCaixaMesKey;
 window.getCaixaMesLabel=getCaixaMesLabel;
-// Expõe _fotoUploadTarget ao escopo global para labels inline em ES modules
-Object.defineProperty(window, '_fotoUploadTarget', {
-  get() { return _fotoUploadTarget; },
-  set(v) { _fotoUploadTarget = v; }
-});
