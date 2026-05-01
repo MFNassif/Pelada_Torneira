@@ -808,9 +808,7 @@ function renderHome() {
     const sumsHome = sorteioTimesArr.map(tm=>tm ? tm.reduce((s,id)=>s+(idxMapHome[id]?.IF||0),0) : 0);
     const activeSumsHome = sumsHome.filter((_,i)=>sorteioTimesArr[i]);
     const totalForceHome = activeSumsHome.reduce((a,b)=>a+b,0);
-    const winProbsHome = totalForceHome > 0
-      ? sumsHome.map(s=>Math.round(s/totalForceHome*100))
-      : sumsHome.map((_,i)=>sorteioTimesArr[i]?Math.round(100/activeSumsHome.length):0);
+    const winProbsHome = calcWinProbs(sorteioTimesArr, idxMapHome);
 
     // Status based on horario
     let statusLabel = '';
@@ -3662,6 +3660,48 @@ function irParaListaSemTimes() {
   renderFlow();
 }
 
+
+// Calcula probabilidade de vitória via Bradley-Terry + Sigmoide
+// Parâmetros derivados dos ratings reais da pelada (não hardcoded):
+//   centro = média de todos os ratings → ponto de inflexão da sigmoide
+//   escala = desvio padrão dos ratings → "distância natural" entre jogadores
+//   T=0.30 → calibrado para: diff=1.2pts≈65/35, top≈50/50, extremos≈52/48
+// Ref: Bradley & Terry (1952), Glickman (1999), Elo (1978)
+function calcWinProbs(timesArr, idxMap) {
+  const T = 0.30; // temperatura BT
+
+  // Calcula centro e escala a partir dos ratings reais dos jogadores cadastrados
+  const todosRatings = Object.values(idxMap).map(x => x?.IF || 0).filter(r => r > 0);
+  const centro = todosRatings.length
+    ? todosRatings.reduce((a, b) => a + b, 0) / todosRatings.length
+    : 7.5;
+  const escala = todosRatings.length > 1
+    ? Math.sqrt(todosRatings.reduce((s, r) => s + (r - centro) ** 2, 0) / (todosRatings.length - 1))
+    : 1.5;
+
+  // Sigmoide centrada na média real: comprime retornos nas extremidades
+  const sigForca = r => 1 / (1 + Math.exp(-(r - centro) / escala));
+
+  // Média de rating por time
+  const medias = timesArr.map(tm => {
+    if (!tm || !tm.length) return 0;
+    return tm.reduce((s, id) => s + (idxMap[id]?.IF || 0), 0) / tm.length;
+  });
+
+  const ativos = medias.filter((_, i) => timesArr[i]?.length);
+  if (!ativos.length) return medias.map(() => 0);
+
+  // Bradley-Terry: força = exp(sigmoide / T)
+  const forcasBT = medias.map((m, i) =>
+    (timesArr[i]?.length) ? Math.exp(sigForca(m) / T) : 0
+  );
+  const totalBT = forcasBT.reduce((a, b) => a + b, 0);
+
+  return forcasBT.map(f =>
+    totalBT > 0 ? Math.round(f / totalBT * 100) : 0
+  );
+}
+
 function renderFlowTimes(c,t) {
   t.textContent='TIMES SORTEADOS';
   const idxMap=Object.fromEntries(calcIdx(appData.jogadores).map(i=>[i.id,i]));
@@ -3675,9 +3715,7 @@ function renderFlowTimes(c,t) {
   const bal=maxD<0.1?'Excelente ✨':maxD<0.3?'Bom 👍':maxD<0.6?'Razoável':'Desbalanceado';
 
   // Probabilidade de vitória: softmax baseado na força relativa
-  const winProbs = totalForce > 0
-    ? sums.map(s => Math.round(s / totalForce * 100))
-    : sums.map((_,i) => flow.times[i] ? Math.round(100 / activeSums.length) : 0);
+  const winProbs = calcWinProbs(flow.times, idxMap);
 
   // Clássico: times[0]=Cruzeiro(Azul), times[1]=Galo(Preto)
   const isClassico = !!flow.timesClassico;
