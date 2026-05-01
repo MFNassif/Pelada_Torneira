@@ -25,12 +25,11 @@ let unsubscribe = null;
 function timesToArr(times, count) {
   if (!times) return [];
   if (Array.isArray(times)) return times; // already array (local)
-  // Convert {t0:[...], t1:[...]} back to [[...],[...]]
+  // Convert {t0:[...], t1:[...]} back to array preserving index (for color slots)
   const n = count || Object.keys(times).length;
   const arr = [];
   for (let i = 0; i < n; i++) {
-    const t = times['t' + i];
-    if (t) arr.push(t);
+    arr.push(times['t' + i] || null); // preserve null slots for color positioning
   }
   return arr;
 }
@@ -796,26 +795,53 @@ function renderHome() {
     if (stats) stats.innerHTML = '';
     if (adminControls) adminControls.innerHTML = '';
   } else {
-    // Times sorteados — hide presença, show times
+    // Times sorteados — show to everyone
     const sorteioTimesArr = timesToArr(sorteio.times, sorteio.timesCount);
-    const T_COLORS = ['t0','t1','t2','t3'];
-    const statusLabel = sorteio.status === 'confirmado'
-      ? `<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);border-radius:99px;padding:4px 12px;font-size:11px;color:#22c55e;margin-bottom:12px">● PARTIDA EM ANDAMENTO</div>`
-      : '';
+    const T_COLORS_HOME = ['t0','t1','t2','t3'];
+    const T_NAMES_HOME = ['Time Vermelho','Time Azul','Time Branco','Time Preto'];
+    const isClassicoHome = sorteio.isClassico;
+    const timeNamesHome = isClassicoHome ? ['🦊 CRUZEIRO','🐓 GALO'] : sorteioTimesArr.map((_,ti)=>T_NAMES_HOME[ti]||'Time '+(ti+1));
+    const timeColorsHome = isClassicoHome ? ['t1','t3'] : sorteioTimesArr.map((_,ti)=>T_COLORS_HOME[ti]);
 
-    const timesHTML = sorteioTimesArr.map((t, ti) => `
-      <div class="team-card ${T_COLORS[ti]}" style="margin-bottom:8px">
-        <div class="t-name"><div class="t-dot"></div>${['Time Vermelho','Time Azul','Time Branco','Time Preto'][ti]||'Time '+(ti+1)}</div>
+    // Win probability
+    const idxMapHome = Object.fromEntries(calcIdx(appData.jogadores).map(i=>[i.id,i]));
+    const sumsHome = sorteioTimesArr.map(tm=>tm ? tm.reduce((s,id)=>s+(idxMapHome[id]?.IF||0),0) : 0);
+    const activeSumsHome = sumsHome.filter((_,i)=>sorteioTimesArr[i]);
+    const totalForceHome = activeSumsHome.reduce((a,b)=>a+b,0);
+    const winProbsHome = totalForceHome > 0
+      ? sumsHome.map(s=>Math.round(s/totalForceHome*100))
+      : sumsHome.map((_,i)=>sorteioTimesArr[i]?Math.round(100/activeSumsHome.length):0);
+
+    // Status based on horario
+    let statusLabel = '';
+    if (sorteio.status === 'confirmado') {
+      const horarioStr = appData.presenca?.horario || sorteio.horario || '';
+      const [iniStr, fimStr] = horarioStr.split(' às ');
+      const now = new Date();
+      const toMin = s => { if(!s) return null; const [h,m]=(s||'').split(':').map(Number); return h*60+(m||0); };
+      const nowMin = now.getHours()*60+now.getMinutes();
+      const iniMin = toMin(iniStr);
+      const fimMin = toMin(fimStr);
+      const dentroHorario = iniMin!=null && fimMin!=null && nowMin>=iniMin && nowMin<=fimMin;
+      statusLabel = dentroHorario
+        ? `<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);border-radius:99px;padding:4px 12px;font-size:11px;color:#22c55e;margin-bottom:12px">● JOGO EM ANDAMENTO</div>`
+        : `<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.25);border-radius:99px;padding:4px 12px;font-size:11px;color:var(--gold);margin-bottom:12px">⏳ AGUARDANDO INÍCIO${iniStr?' · '+iniStr:''}</div>`;
+    }
+
+    const timesHTML = sorteioTimesArr.map((t, ti) => t ? `
+      <div class="team-card ${timeColorsHome[ti]}" style="margin-bottom:8px">
+        <div class="t-name"><div class="t-dot"></div>${timeNamesHome[ti]}</div>
         ${t.map(id => {
           const j = appData.jogadores.find(x=>x.id===id);
           return `<div class="t-player"><span>${j?.nome||id}</span></div>`;
         }).join('')}
-      </div>`).join('');
+        <div class="t-strength" style="margin-top:6px;font-size:11px;color:var(--gold)">🏆 ${winProbsHome[ti]}% chance de vitória</div>
+      </div>` : '').join('');
 
     if (msg) msg.innerHTML = `<div class="card shield-card" style="margin-bottom:8px">${statusLabel}${timesHTML}</div>`;
     if (stats) stats.innerHTML = `<div style="font-size:10px;color:var(--t3);margin-bottom:8px;padding:0 4px">Sorteado em ${sorteio.data}</div>`;
 
-    // Admin controls (cancelar/concluir) after times
+    // Admin controls
     if (adminControls && isAdmin && sorteio.status === 'confirmado') {
       adminControls.innerHTML = `
         <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
@@ -848,6 +874,7 @@ function renderComunicados() {
           <div style="flex:1">
             <div style="font-family:'Oswald',sans-serif;font-size:13px;font-weight:600;color:var(--gold-lt);letter-spacing:1px;margin-bottom:4px">${com.titulo}</div>
             <div style="font-size:13px;color:var(--text);line-height:1.6;white-space:pre-wrap">${com.texto}</div>
+            ${com.foto ? `<img src="${com.foto}" style="width:100%;border-radius:8px;margin-top:8px;max-height:320px;object-fit:cover">` : ''}
             <div style="font-size:10px;color:var(--t3);margin-top:6px">${com.autor} · ${new Date(com.criadoEm).toLocaleDateString('pt-BR')}</div>
           </div>
           ${isAdmin ? `<button onclick="removerComunicado('${com.id}')" style="background:none;border:none;color:var(--t3);cursor:pointer;font-size:18px;line-height:1;flex-shrink:0">×</button>` : ''}
@@ -867,6 +894,11 @@ function abrirNovoComunicado() {
       <div class="m-sub">Visível para todos na home</div>
       <div class="field"><label>Título</label><input class="input" id="comTitulo" placeholder="Ex: Cancelamento do domingo" maxlength="60"></div>
       <div class="field"><label>Mensagem</label><textarea class="input" id="comTexto" rows="4" placeholder="Escreva o comunicado..." style="resize:none;height:auto"></textarea></div>
+      <div class="field">
+        <label>Foto (opcional)</label>
+        <div id="comFotoPreview" style="margin-top:6px"></div>
+        <button class="btn btn-ghost" style="font-size:12px;margin-top:6px" onclick="abrirFotoComunicado()">📷 Adicionar foto</button>
+      </div>
       <button class="btn btn-gold" onclick="salvarComunicado()">PUBLICAR</button>
       <button class="btn btn-ghost mt8" onclick="document.getElementById('modalComunicado').remove()">CANCELAR</button>
     </div>`;
@@ -879,7 +911,8 @@ async function salvarComunicado() {
   const texto = document.getElementById('comTexto')?.value?.trim();
   if (!titulo || !texto) { showToast('Preencha título e mensagem'); return; }
   const id = 'com_' + Date.now();
-  const com = { id, titulo, texto, autor: currentUser.nome, criadoEm: Date.now() };
+  const com = { id, titulo, texto, autor: currentUser.nome, criadoEm: Date.now(), ...(window._comFotoBase64 ? { foto: window._comFotoBase64 } : {}) };
+  window._comFotoBase64 = null;
   if (!appData.comunicados) appData.comunicados = [];
   appData.comunicados.unshift(com);
   await firestoreSet('comunicados', id, com);
@@ -897,6 +930,27 @@ async function removerComunicado(id) {
   renderComunicados();
   showToast('Comunicado removido');
 }
+
+function abrirFotoComunicado() {
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = 'image/*';
+  inp.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0;pointer-events:none';
+  document.body.appendChild(inp);
+  inp.addEventListener('change', async () => {
+    const file = inp.files[0];
+    inp.remove();
+    if (!file) return;
+    if (file.size > 15 * 1024 * 1024) { showToast('Foto muito grande (máx 15MB)'); return; }
+    const base64 = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=e=>res(e.target.result); r.onerror=rej; r.readAsDataURL(file); });
+    const resized = await resizeImage(base64, 1200);
+    window._comFotoBase64 = resized;
+    const prev = document.getElementById('comFotoPreview');
+    if (prev) prev.innerHTML = `<img src="${resized}" style="width:100%;border-radius:8px;max-height:200px;object-fit:cover"><button onclick="window._comFotoBase64=null;document.getElementById('comFotoPreview').innerHTML=''" style="font-size:11px;color:var(--t3);background:none;border:none;cursor:pointer;margin-top:4px">✕ Remover foto</button>`;
+  });
+  inp.click();
+}
+window.abrirFotoComunicado = abrirFotoComunicado;
 
 // ─── PRESENÇA ─────────────────────────────────────────────────
 function getDescricaoPelada(horario) {
@@ -972,9 +1026,25 @@ function renderPresenca() {
   const vagas = getVagasLimite(confirmados, espera);
   const esperaMax = getEsperaLimite(confirmados);
   const n = getTamanhoTime(confirmados);
-  // Duração e horário mudam com o número de times
+  // Duração e horário: convencional=2h só com 4 times, clássico=sempre 2h
+  const tipoPresencaRender = presenca.tipo || (presenca.tipoPelada === 'classico' ? 'classico' : 'normal');
   const nTimes = total >= n*4 ? 4 : total >= n*3 ? 3 : Math.floor(total/n)||1;
-  const horario = total >= n*4 ? '11:30 às 13:30' : '11:30 às 13:00';
+  const eh2h = tipoPresencaRender === 'classico' || nTimes >= 4;
+  const horarioBase = presenca.horario?.split(' às ')?.[0] || '11:30';
+  const horario = (() => {
+    const [h, m] = horarioBase.split(':').map(Number);
+    const fimMin = h * 60 + m + (eh2h ? 120 : 90);
+    const fim = `${String(Math.floor(fimMin/60)).padStart(2,'0')}:${String(fimMin%60).padStart(2,'0')}`;
+    return `${horarioBase} às ${fim}`;
+  })();
+  // Atualiza horário automaticamente se mudou
+  if (presenca.horario && presenca.horario !== horario) {
+    presenca.horario = horario;
+    firestoreSet('config', 'presenca', presenca).catch(()=>{});
+    saveLocal();
+  } else if (!presenca.horario) {
+    presenca.horario = horario;
+  }
 
   const now = Date.now();
   const peladaDate = parsePeladaDate(dataLista);
@@ -1430,14 +1500,14 @@ function abrirAdminPresenca() {
 
       <div class="section-lbl" style="margin-bottom:8px">LOCAL E HORÁRIO</div>
       <div class="field"><label>Endereço</label>
-        <input class="input" id="apLocal" value="R. Juscelino Barbosa 254" maxlength="60">
+        <input class="input" id="apLocal" value="${presenca.local || 'R. Juscelino Barbosa 254'}" maxlength="60">
       </div>
       <div style="display:flex;gap:8px">
         <div class="field" style="flex:1"><label>Início</label>
-          <input class="input" id="apHoraIni" value="11:30" maxlength="5">
+          <input class="input" id="apHoraIni" value="${presenca.horario?.split(' às ')?.[0] || '11:30'}" maxlength="5">
         </div>
         <div class="field" style="flex:1"><label>Fim</label>
-          <input class="input" id="apHoraFim" value="${presenca.confirmados.length>=20?'13:30':'13:00'}" maxlength="5">
+          <input class="input" id="apHoraFim" value="${presenca.horario?.split(' às ')?.[1] || '13:00'}" maxlength="5">
         </div>
       </div>
       <button class="btn btn-ghost" style="margin-bottom:16px;font-size:12px" onclick="salvarInfoPelada()">💾 SALVAR LOCAL/HORÁRIO</button>
@@ -3595,18 +3665,19 @@ function irParaListaSemTimes() {
 function renderFlowTimes(c,t) {
   t.textContent='TIMES SORTEADOS';
   const idxMap=Object.fromEntries(calcIdx(appData.jogadores).map(i=>[i.id,i]));
-  const sums=flow.times.map(tm=>tm.reduce((s,id)=>s+(idxMap[id]?.IF||0),0));
-  const maxS=Math.max(...sums);
-  const totalForce = sums.reduce((a,b)=>a+b,0);
+  const sums=flow.times.map(tm=>tm ? tm.reduce((s,id)=>s+(idxMap[id]?.IF||0),0) : 0);
+  const activeSums = sums.filter((_,i)=>flow.times[i]);
+  const maxS=Math.max(...activeSums);
+  const totalForce = activeSums.reduce((a,b)=>a+b,0);
   const diffs=[];
-  for(let i=0;i<sums.length;i++) for(let j=i+1;j<sums.length;j++) diffs.push(Math.abs(sums[i]-sums[j]));
-  const maxD=Math.max(...diffs);
+  for(let i=0;i<activeSums.length;i++) for(let j=i+1;j<activeSums.length;j++) diffs.push(Math.abs(activeSums[i]-activeSums[j]));
+  const maxD=diffs.length?Math.max(...diffs):0;
   const bal=maxD<0.1?'Excelente ✨':maxD<0.3?'Bom 👍':maxD<0.6?'Razoável':'Desbalanceado';
 
   // Probabilidade de vitória: softmax baseado na força relativa
   const winProbs = totalForce > 0
     ? sums.map(s => Math.round(s / totalForce * 100))
-    : sums.map(() => Math.round(100 / sums.length));
+    : sums.map((_,i) => flow.times[i] ? Math.round(100 / activeSums.length) : 0);
 
   // Clássico: times[0]=Cruzeiro(Azul), times[1]=Galo(Preto)
   const isClassico = !!flow.timesClassico;
@@ -3621,7 +3692,7 @@ function renderFlowTimes(c,t) {
       <div style="font-size:12px;color:var(--t2)">Equilíbrio dos times</div>
       <div style="font-family:'Oswald',sans-serif;font-size:15px;font-weight:600;color:var(--gold-lt)">${bal}</div>
     </div>
-    ${flow.times.map((tm,ti)=>`
+    ${flow.times.map((tm,ti)=> tm ? `
       <div class="team-card ${timeColors[ti]}">
         <div class="t-name"><div class="t-dot"></div>${timeNames[ti]}</div>
         ${tm.map(id=>{const j=appData.jogadores.find(x=>x.id===id);const ix=idxMap[id];return`<div class="t-player"><span>${j?.nome||id}</span><span class="t-player-if">${ix?.IF.toFixed(2)||'—'}</span></div>`;}).join('')}
@@ -3629,7 +3700,7 @@ function renderFlowTimes(c,t) {
           Força: ${sums[ti].toFixed(4)} · ${maxS>0?Math.round(sums[ti]/maxS*100):0}%
           <span style="margin-left:8px;color:var(--gold)">🏆 ${winProbs[ti]}% chance de vitória</span>
         </div>
-      </div>`).join('')}
+      </div>` : '').join('')}
     <div class="row mt12">
       <button class="btn btn-ghost" onclick="resortear()">🔀 RESORTEAR</button>
       <button class="btn btn-danger" style="flex:0.6" onclick="cancelarSorteio()">✕</button>
@@ -3715,9 +3786,8 @@ function sortearTimesClassico() {
     else cruzeirenses.push(id);
   });
   // GALO (Atleticano) = TIME PRETO (índice 3), CRUZEIRO = TIME AZUL (índice 1)
-  // flow.times[0]=Vermelho, [1]=Azul, [2]=Branco, [3]=Preto
-  // Para 2 times, usamos índices 1 (Azul=Cruzeiro) e 3 (Preto=Galo)
-  flow.times = [cruzeirenses, atleticanos];
+  // Usamos array de 4 posições com null nos slots não usados para preservar o índice de cor
+  flow.times = [null, cruzeirenses, null, atleticanos];
   flow.timesClassico = true; // flag para renderFlowTimes usar cores corretas
   flow.step = 'times';
   renderFlow();
@@ -3778,6 +3848,7 @@ async function confirmarTimes(){
   const timesObj = {};
   const nomesObj = {};
   flow.times.forEach((t, i) => {
+    if (!t) return; // skip null slots (used for classico color positioning)
     timesObj['t' + i] = t;
     nomesObj['t' + i] = t.map(id => {
       const j = appData.jogadores.find(x=>x.id===id);
@@ -3787,6 +3858,8 @@ async function confirmarTimes(){
   const timesData = {
     times: timesObj,
     timesCount: flow.times.length,
+    isClassico: !!flow.timesClassico,
+    horario: appData.presenca?.horario || '',
     data: flow.data,
     status: 'confirmado',
     sorteadoEm: Date.now(),
