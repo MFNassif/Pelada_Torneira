@@ -800,8 +800,14 @@ function renderHome() {
     const T_COLORS_HOME = ['t0','t1','t2','t3'];
     const T_NAMES_HOME = ['Time Vermelho','Time Azul','Time Branco','Time Preto'];
     const isClassicoHome = sorteio.isClassico;
-    const timeNamesHome = isClassicoHome ? ['🦊 CRUZEIRO','🐓 GALO'] : sorteioTimesArr.map((_,ti)=>T_NAMES_HOME[ti]||'Time '+(ti+1));
-    const timeColorsHome = isClassicoHome ? ['t1','t3'] : sorteioTimesArr.map((_,ti)=>T_COLORS_HOME[ti]);
+    const classicoNamesHome  = { 1: '🦊 CRUZEIRO', 3: '🐓 GALO' };
+    const classicoColorsHome = { 1: 't1',           3: 't3'     };
+    const timeNamesHome  = isClassicoHome
+      ? sorteioTimesArr.map((_, ti) => classicoNamesHome[ti]  || '')
+      : sorteioTimesArr.map((_, ti) => T_NAMES_HOME[ti] || 'Time '+(ti+1));
+    const timeColorsHome = isClassicoHome
+      ? sorteioTimesArr.map((_, ti) => classicoColorsHome[ti] || T_COLORS_HOME[ti])
+      : sorteioTimesArr.map((_, ti) => T_COLORS_HOME[ti]);
 
     // Win probability
     const idxMapHome = Object.fromEntries(calcIdx(appData.jogadores).map(i=>[i.id,i]));
@@ -1198,7 +1204,9 @@ Pix: mfnassif16@gmail.com</div>
           return `🐓 ${galosConf}/${vagasG} conf · 🦊 ${rapConf}/${vagasC} conf` +
             (galosEsp + rapEsp > 0 ? ` · espera: 🐓${galosEsp}/3 🦊${rapEsp}/3` : '');
         })() : `${total}/${vagas} confirmados · ${espera.length}/${esperaMax} espera`}
-        ${total >= n*3 ? ` · <span style="color:var(--gold)">✓ ${nTimes} times / ${nTimes>=4?'2h':'1h30'}</span>` : ''}
+        ${tipoPresencaRender === 'classico'
+          ? ` · <span style="color:var(--gold)">✓ 2h</span>`
+          : total >= n*3 ? ` · <span style="color:var(--gold)">✓ ${nTimes} times / ${nTimes>=4?'2h':'1h30'}</span>` : ''}
       </div>
       ${btnHTML}
     </div>`;
@@ -3717,13 +3725,17 @@ function renderFlowTimes(c,t) {
   // Probabilidade de vitória: softmax baseado na força relativa
   const winProbs = calcWinProbs(flow.times, idxMap);
 
-  // Clássico: times[0]=Cruzeiro(Azul), times[1]=Galo(Preto)
+  // Clássico: flow.times = [null, cruzeirenses, null, atleticanos]
+  // índice 1 = Cruzeiro (Azul/t1), índice 3 = Galo (Preto/t3)
   const isClassico = !!flow.timesClassico;
-  const timeNames = isClassico
-    ? ['🦊 CRUZEIRO', '🐓 GALO']
-    : flow.times.map((_,ti) => T_NAMES[ti]);
-  // Cores CSS: Cruzeiro=Azul(t1), Galo=Preto(t3); normal usa T_COLORS
-  const timeColors = isClassico ? ['t1','t3'] : flow.times.map((_,ti) => T_COLORS[ti]);
+  const classicoNames  = { 1: '🦊 CRUZEIRO', 3: '🐓 GALO' };
+  const classicoColors = { 1: 't1',           3: 't3'     };
+  const timeNames  = isClassico
+    ? flow.times.map((_, ti) => classicoNames[ti]  || '')
+    : flow.times.map((_, ti) => T_NAMES[ti]);
+  const timeColors = isClassico
+    ? flow.times.map((_, ti) => classicoColors[ti] || T_COLORS[ti])
+    : flow.times.map((_, ti) => T_COLORS[ti]);
 
   c.innerHTML=`
     <div class="card gold-card" style="margin-bottom:14px;display:flex;justify-content:space-between;align-items:center">
